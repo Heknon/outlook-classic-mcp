@@ -489,6 +489,8 @@ def create_event(
     all_day: bool = False,
     send_invites: bool = True,
     busy_status: str | None = None,
+    categories: list[str] | None = None,
+    category_color: str | None = None,
 ) -> dict[str, Any]:
     appt = outlook.CreateItem(OL_APPOINTMENT_ITEM)
     appt.Subject = subject
@@ -511,6 +513,8 @@ def create_event(
         appt.Body = body
     if busy_status:
         appt.BusyStatus = _busy_code(busy_status)
+    if categories:
+        _apply_categories(namespace, appt, categories, category_color)
     if reminder_minutes is not None:
         appt.ReminderSet = True
         appt.ReminderMinutesBeforeStart = reminder_minutes
@@ -567,6 +571,14 @@ def _busy_code(value: str) -> int:
     return code
 
 
+def _apply_categories(namespace: Any, item: Any, names: list[str], color: str | None) -> None:
+    from outlook_mcp.client.categories import ensure_categories
+
+    names = [n.strip() for n in names if n and n.strip()]
+    ensure_categories(namespace, names, color)
+    item.Categories = ", ".join(names)
+
+
 def _remove_attendees(ev: Any, addresses: list[str]) -> list[str]:
     wanted = {a.strip().lower() for a in addresses if a}
     removed: list[str] = []
@@ -607,6 +619,8 @@ def update_event(
     send_update: bool = False,
     occurrence_start: str | None = None,
     apply_to_series: bool = False,
+    categories: list[str] | None = None,
+    category_color: str | None = None,
 ) -> dict[str, Any]:
     ev = _target_event(namespace, entry_id, occurrence_start)
     _guard_series(ev, apply_to_series, "change")
@@ -632,6 +646,8 @@ def update_event(
         ev.ReminderMinutesBeforeStart = reminder_minutes
     if busy_status:
         ev.BusyStatus = _busy_code(busy_status)
+    if categories is not None:
+        _apply_categories(namespace, ev, categories, category_color)
 
     removed: list[str] = []
     if add_attendees or add_optional_attendees or remove_attendees:

@@ -285,6 +285,51 @@ def main() -> int:
         out = mail.search_mails(outlook, ns, query="a", search_in="archive", scope="subject", limit=3)
         return f"{out['count']} hits in {out['folders_searched']} archive folders"
 
+    @check("category: create, colour a draft, clean up")
+    def t_category():
+        from outlook_mcp.client import categories
+
+        name = "MCP smoke test"
+        try:
+            categories.create_category(outlook, ns, name=name, color="teal")
+            if cleanup:
+                out = categories.set_category(outlook, ns, entry_id=cleanup[0].EntryID, categories=[name], mode="add")
+                assert name in out["categories"], out
+            return "created (teal), applied to the test draft"
+        finally:
+            try:
+                categories.delete_category(outlook, ns, name=name)
+            except Exception:  # noqa: BLE001
+                pass
+
+    @check("rule: preview, create disabled, delete")
+    def t_rule():
+        from outlook_mcp.client import rules
+        from outlook_mcp.schemas import RuleActions, RuleConditions
+
+        name = "MCP smoke test rule"
+        c = RuleConditions(subject_words=[MARKER])
+        a = RuleActions(categories=["MCP smoke test"], stop_processing=True)
+        pre = rules.create_rule(outlook, ns, name=name, conditions=c, actions=a)
+        assert pre["status"] == "preview", pre
+        try:
+            out = rules.create_rule(outlook, ns, name=name, conditions=c, actions=a, enabled=False, confirm=True)
+            listed = rules.list_rules(outlook, ns, details=True)
+            mine = next(x for x in listed["items"] if x["name"] == name)
+            assert mine["conditions"].get("subject_words") == [MARKER], mine
+            local = " (client-only)" if mine["client_only"] else ""
+            return f"{out['status']} on Exchange{local}, read back, deleting"
+        finally:
+            try:
+                rules.delete_rule(outlook, ns, name=name, confirm=True)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                from outlook_mcp.client import categories
+                categories.delete_category(outlook, ns, name="MCP smoke test")
+            except Exception:  # noqa: BLE001
+                pass
+
     @check("signatures")
     def t_sigs():
         out = mail.list_signatures_info(outlook, ns)
@@ -292,7 +337,7 @@ def main() -> int:
 
     for t in (t_whoami, t_list, t_since, t_reply_draft, t_thread, t_hebrew, t_send_refused, t_event,
               t_list_events, t_fb_me, t_find_me, t_colleague, t_shared, t_ctrlk,
-              t_by_person, t_mailboxes, t_search_all, t_search_archive, t_sigs):
+              t_by_person, t_mailboxes, t_search_all, t_search_archive, t_category, t_rule, t_sigs):
         t()
 
     if not args.keep:

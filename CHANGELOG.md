@@ -2,6 +2,17 @@
 
 ## 0.5.0
 
+- Categories: `outlook_create_category`, `outlook_update_category`
+  (recolour/rename), `outlook_delete_category`; all 25 Outlook colours by
+  name. `outlook_set_category` gains bulk `entry_ids`, `mode`
+  (replace/add/remove), `occurrence_start` for one meeting occurrence, and
+  creates missing categories in a chosen colour. `create_event` /
+  `update_event` take `categories`.
+- Rules: `outlook_create_rule` (conditions, exceptions, actions as typed
+  objects), `outlook_run_rule` ("Run Rules Now"), `outlook_delete_rule`, all
+  preview-first with `confirm=true`; `outlook_list_rules(details=true)`
+  explains rules. Forward/redirect rules refused in draft-only mode and
+  limited to the user's domain unless `OUTLOOK_MCP_ALLOW_EXTERNAL_FORWARD=1`.
 - New `outlook_get_thread`: a whole conversation in one call, oldest first,
   across folders (incl. Sent Items and drafts), with quoted history removed
   (English and Hebrew reply headers and other common formats).

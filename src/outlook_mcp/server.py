@@ -44,8 +44,13 @@ Tool categories (all prefixed `outlook_`):
     get_contact, resolve_name (like Ctrl+K: name -> address, or candidates
     to ask the user about when ambiguous)
   - Tasks: list_tasks, create_task, complete_task
-  - Categories: list_categories, set_category
-  - Rules: list_rules, toggle_rule  (modifies live mail rules — confirm first)
+  - Categories (colour labels on mail, meetings, tasks): list_categories,
+    create_category, update_category, delete_category, set_category
+    (replace/add/remove, bulk, one meeting occurrence; creates missing ones)
+  - Rules: list_rules (details=true explains them), create_rule, run_rule,
+    delete_rule, toggle_rule. create/run/delete return a PREVIEW unless
+    confirm=true: show it to the user first. Forward/redirect rules are
+    refused in draft-only mode and limited to the user's own domain.
   - Out-of-Office: get_out_of_office
   - Account: whoami  (sanity check on the bound mailbox)
 

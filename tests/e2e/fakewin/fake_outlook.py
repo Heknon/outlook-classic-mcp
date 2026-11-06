@@ -672,6 +672,14 @@ class Folder:
         self.Parent = None
 
     @property
+    def FolderPath(self):
+        parts, f = [], self
+        while f is not None:
+            parts.append(f.Name)
+            f = f.Parent
+        return "\\\\" + "\\".join(reversed(parts))
+
+    @property
     def Items(self):
         return Items(self)
 
@@ -732,6 +740,7 @@ class Namespace:
         self.CurrentProfileName = "Outlook"
         self.Offline = False
         self.ExchangeConnectionMode = 700
+        self.Categories = Categories()
 
     @property
     def CurrentUser(self):
@@ -774,6 +783,134 @@ class Namespace:
         return type("GAL", (), {"AddressEntries": [AddressEntry(u) for u in app._gal]})()
 
 
+class Category:
+    def __init__(self, name, color):
+        self.Name, self.Color, self.CategoryID = name, color, "{" + name + "}"
+        self.ShortcutKey = 0
+
+
+class Categories:
+    def __init__(self):
+        self._items = [Category("Work", 8), Category("Personal", 5)]
+
+    @property
+    def Count(self):
+        return len(self._items)
+
+    def Item(self, i):
+        return self._items[i - 1]
+
+    def Add(self, name, color=0, shortcut=0):
+        if any(c.Name.lower() == name.lower() for c in self._items):
+            raise Exception("A category with this name already exists.")
+        c = Category(name, color)
+        self._items.append(c)
+        return c
+
+    def Remove(self, key):
+        self._items = [c for c in self._items if key not in (c.CategoryID, c.Name)]
+
+
+class _RuleCondition:
+    def __init__(self, app):
+        self.Enabled = False
+        self.Recipients = Recipients(app)
+        self.Text = ()
+        self.Address = ()
+        self.Categories = ()
+        self.Importance = 1
+        self.Folder = None
+        self.MarkInterval = 4
+
+
+class _RuleSide:
+    _NAMES = ()
+
+    def __init__(self, app, names):
+        for n in names:
+            setattr(self, n, _RuleCondition(app))
+
+
+_COND_NAMES = ("From", "SentTo", "Subject", "Body", "BodyOrSubject", "SenderAddress", "RecipientAddress",
+               "MessageHeader", "Category", "Importance", "ToMe", "OnlyToMe", "CC", "ToOrCc", "HasAttachment")
+_ACT_NAMES = ("MoveToFolder", "CopyToFolder", "AssignToCategory", "ClearCategories", "MarkAsTask", "Delete",
+              "DeletePermanently", "Stop", "DesktopAlert", "Forward", "ForwardAsAttachment", "Redirect")
+
+
+class Rule:
+    def __init__(self, app, name):
+        self._app = app
+        self.Name, self.Enabled, self.RuleType, self.IsLocalRule = name, True, 0, False
+        self.Conditions = _RuleSide(app, _COND_NAMES)
+        self.Exceptions = _RuleSide(app, _COND_NAMES)
+        self.Actions = _RuleSide(app, _ACT_NAMES + ("NotifyRead",))
+
+    def _match(self, item, side):
+        checks = []
+        c = side
+        if c.Subject.Enabled:
+            checks.append(any(w.lower() in (item.Subject or "").lower() for w in c.Subject.Text))
+        if c.SenderAddress.Enabled:
+            addr = (item._sender_smtp + " " + item.SenderEmailAddress).lower()
+            checks.append(any(w.lower() in addr for w in c.SenderAddress.Address))
+        if c.From.Enabled:
+            senders = {r.Address.lower() for r in c.From.Recipients} | {r.Name.lower() for r in c.From.Recipients}
+            checks.append(item._sender_smtp.lower() in senders or item.SenderName.lower() in senders)
+        if c.HasAttachment.Enabled:
+            checks.append(item.Attachments.Count > 0)
+        return bool(checks) and all(checks)
+
+    def Execute(self, show_progress=False, folder=None, include_subfolders=False, option=0):
+        folder = folder or self._app._folders[6]
+        for item in list(folder._items):
+            if item.Class != 43:
+                continue
+            if option == 1 and item.UnRead or option == 2 and not item.UnRead:
+                continue
+            if not self._match(item, self.Conditions) or (
+                any(getattr(self.Exceptions, n).Enabled for n in _COND_NAMES) and self._match(item, self.Exceptions)
+            ):
+                continue
+            a = self.Actions
+            if a.AssignToCategory.Enabled:
+                cur = [x.strip() for x in item.Categories.split(",") if x.strip()]
+                item.Categories = ", ".join(cur + [c for c in a.AssignToCategory.Categories if c not in cur])
+            if a.Forward.Enabled or a.Redirect.Enabled:
+                self._app._outbox.append({"kind": "rule-forward", "subject": item.Subject})
+            if a.MoveToFolder.Enabled:
+                item.Move(a.MoveToFolder.Folder)
+            elif a.Delete.Enabled:
+                item.Move(self._app._folders[3])
+
+
+class Rules:
+    def __init__(self, app):
+        self._app = app
+        self._items = list(app._saved_rules)
+
+    @property
+    def Count(self):
+        return len(self._items)
+
+    def Item(self, i):
+        return self._items[i - 1]
+
+    def Create(self, name, kind):
+        r = Rule(self._app, name)
+        r.RuleType = kind
+        self._items.append(r)
+        return r
+
+    def Remove(self, i):
+        del self._items[i - 1]
+
+    def Save(self, show_progress=False):
+        for r in self._items:
+            if r.Actions.MoveToFolder.Enabled and r.Actions.MoveToFolder.Folder is None:
+                raise Exception("One or more rules cannot be saved because of invalid actions or conditions.")
+        self._app._saved_rules = list(self._items)
+
+
 class Store:
     def __init__(self, app, name=None, store_id="STORE-ME", kind=0, root=None):
         self._app = app
@@ -784,6 +921,9 @@ class Store:
 
     def GetRootFolder(self):
         return self._root or self._app._root
+
+    def GetRules(self):
+        return Rules(self._app)
 
     def GetDefaultFolder(self, kind):
         if self._root is not None:
@@ -822,6 +962,7 @@ class Application:
         self._shared_with_me = {"dana.levi@contoso.com"}
         self._shared_folders = {}
         self._extra_stores = []
+        self._saved_rules = []
         self.Session = None
         self._ns = Namespace(self)
         self.Session = self._ns
@@ -883,6 +1024,12 @@ class Application:
         mail("Design review", "Dana Cohen", 26)
         mail("Plain text note", "Yossi Mizrahi", 50, html=False)
         mail("Old thread", "Dana Levi", 24 * 10)
+        vendors = Folder(self, "Vendors", None, 0)
+        vendors.Parent = inbox
+        inbox._subs.append(vendors)
+        self._gal.append(ExchangeUser("Acme Billing", "billing@acme-supplies.com", "", "", ""))
+        mail("Invoice 1042", "Acme Billing", 5)
+        mail("Invoice 1043", "Acme Billing", 4)
 
         # A three-message thread: Dana -> my reply (Sent Items) -> Dana.
         first = mail("Offsite plan", "Dana Levi", 30, html=False,

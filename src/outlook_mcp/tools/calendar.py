@@ -157,6 +157,11 @@ def register(mcp, bridge) -> None:
             Optional[str],
             Field(description="free, tentative, busy, out_of_office or working_elsewhere."),
         ] = None,
+        categories: Annotated[
+            Optional[list[str]],
+            Field(description="Colour categories for the event (created if missing); the first sets its colour."),
+        ] = None,
+        category_color: Annotated[Optional[str], Field(description="Colour for newly created categories.")] = None,
     ) -> str:
         """Create a calendar event or meeting.
 
@@ -178,6 +183,8 @@ def register(mcp, bridge) -> None:
             all_day=all_day,
             send_invites=send_invites,
             busy_status=busy_status,
+            categories=categories,
+            category_color=category_color,
         )
         return format_response(data, "json")
 
@@ -216,6 +223,11 @@ def register(mcp, bridge) -> None:
         ] = False,
         occurrence_start: Annotated[Optional[str], Field(description=OCCURRENCE_DESC)] = None,
         apply_to_series: Annotated[bool, Field(description=SERIES_DESC)] = False,
+        categories: Annotated[
+            Optional[list[str]],
+            Field(description="Replace the event's categories ([] clears them)."),
+        ] = None,
+        category_color: Annotated[Optional[str], Field(description="Colour for newly created categories.")] = None,
     ) -> str:
         """Update an event. Only non-null fields are written."""
         data = await bridge.call(
@@ -235,6 +247,8 @@ def register(mcp, bridge) -> None:
             send_update=send_update,
             occurrence_start=occurrence_start,
             apply_to_series=apply_to_series,
+            categories=categories,
+            category_color=category_color,
         )
         return format_response(data, "json")
 

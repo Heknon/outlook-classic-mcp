@@ -121,7 +121,9 @@ async def scenario_draft_only(r: Run):
         expected = {
             "outlook_reply_mail", "outlook_send_draft", "outlook_find_meeting_times",
             "outlook_get_free_busy", "outlook_search_mails_by_person", "outlook_resolve_name",
-            "outlook_list_mailboxes", "outlook_get_thread",
+            "outlook_list_mailboxes", "outlook_get_thread", "outlook_create_rule", "outlook_run_rule",
+            "outlook_delete_rule", "outlook_create_category", "outlook_update_category",
+            "outlook_delete_category",
         }
         assert expected <= tools, expected - tools
         return f"{len(tools)} tools"
@@ -456,6 +458,89 @@ async def scenario_draft_only(r: Run):
         assert draft["html_body"].count("dir=RTL") == 2, draft["html_body"][:300]
         return "new Hebrew mail is RTL"
 
+    async def t_category_crud():
+        out = await r.call("outlook_create_category", name="Customer A", color="dark green")
+        assert out["color"] == "dark green", out
+        out = await r.call("outlook_update_category", name="customer a", color="gold")
+        assert out["color"] == "dark yellow", out
+        lst = await r.call("outlook_list_categories", response_format="json")
+        assert {"name": "Customer A", "color": "dark yellow", "color_code": 19} in lst["items"], lst
+        return "create, recolour (gold = dark yellow), list"
+
+    async def t_categorize_mails_bulk():
+        found = await r.call("outlook_search_mails", query="Invoice", scope="subject")
+        ids = [i["entry_id"] for i in found["items"]]
+        out = await r.call("outlook_set_category", entry_ids=ids, categories=["Finance"], mode="add", color="orange")
+        assert out["count"] == 2 and out["created_categories"] == ["Finance"], out
+        got = await r.call("outlook_get_mail", entry_id=ids[0])
+        assert got["categories"] == "Finance", got["categories"]
+        return "2 invoices tagged, 'Finance' created in orange"
+
+    async def t_categorize_meeting():
+        out = await r.call("outlook_create_event", subject="Customer A sync", start=local(3, "11:00"),
+                           end=local(3, "11:30"), categories=["Customer A"])
+        ev = await r.call("outlook_get_event", entry_id=out["entry_id"])
+        assert ev["categories"] == "Customer A", ev
+        cal = await r.call("outlook_list_events", start=local(1, "00:00"), end=local(1, "23:59"))
+        st = next(i for i in cal["items"] if i["subject"] == "Standup")
+        await r.call("outlook_set_category", entry_id=st["entry_id"], occurrence_start=st["start"],
+                     categories="Work")
+        series = await r.call("outlook_get_event", entry_id=st["entry_id"])
+        assert series["categories"] != "Work", "the whole series was recoloured"
+        return "new meeting coloured; one standup occurrence only"
+
+    async def t_rule_preview_and_create():
+        args = dict(name="Acme invoices",
+                    conditions={"sender_address_words": ["@acme-supplies.com"], "subject_words": ["invoice"]},
+                    actions={"move_to_folder": "Inbox/Vendors", "categories": ["Vendors"], "category_color": "teal"})
+        pre = await r.call("outlook_create_rule", **args)
+        assert pre["status"] == "preview" and pre["matches"]["would_match"] == 2, pre
+        listed = await r.call("outlook_list_rules", details=True)
+        assert listed["count"] == 0, "preview saved a rule"
+        out = await r.call("outlook_create_rule", **args, confirm=True)
+        assert out["status"] == "created", out
+        acts = out["rule"]["actions"]
+        assert acts["categories"] == ["Vendors"] and acts["move_to_folder"].endswith("Inbox\\Vendors"), acts
+        return "previewed 2 matches, then created"
+
+    async def t_rule_run():
+        pre = await r.call("outlook_run_rule", name="acme invoices")
+        assert pre["status"] == "preview" and pre["matches"]["would_match"] == 2, pre
+        inbox = await r.call("outlook_search_mails", query="Invoice", scope="subject")
+        assert inbox["count"] == 2, "preview moved mail"
+        await r.call("outlook_run_rule", name="acme invoices", confirm=True)
+        inbox = await r.call("outlook_search_mails", query="Invoice", scope="subject")
+        moved = await r.call("outlook_search_mails", query="Invoice", scope="subject", folder="Inbox/Vendors")
+        assert inbox["count"] == 0 and moved["count"] == 2, (inbox["count"], moved["count"])
+        cats = await r.call("outlook_get_mail", entry_id=moved["items"][0]["entry_id"])
+        assert "Vendors" in cats["categories"], cats["categories"]
+        return "2 invoices moved to Inbox/Vendors and tagged"
+
+    async def t_rule_forward_refused():
+        try:
+            await r.call("outlook_create_rule", name="fw", conditions={"subject_words": ["x"]},
+                         actions={"forward_to": ["dana.levi@contoso.com"]})
+        except ToolError as exc:
+            assert "draft-only" in str(exc), exc
+            return "refused in draft-only mode"
+        raise AssertionError("forward rule accepted in draft-only mode")
+
+    async def t_rule_delete():
+        pre = await r.call("outlook_delete_rule", name="Acme invoices")
+        assert pre["status"] == "preview"
+        await r.call("outlook_delete_rule", name="Acme invoices", confirm=True)
+        listed = await r.call("outlook_list_rules", details=True)
+        assert listed["count"] == 0, listed
+        return "preview, then deleted"
+
+    for name, fn in [
+        ("category create/recolour/list", t_category_crud), ("categorize mails in bulk", t_categorize_mails_bulk),
+        ("colour a meeting / one occurrence", t_categorize_meeting),
+        ("rule: preview then create", t_rule_preview_and_create), ("rule: run on existing mail", t_rule_run),
+        ("rule: forward refused (draft-only)", t_rule_forward_refused), ("rule: delete", t_rule_delete),
+    ]:
+        await r.check(name, fn())
+
     for name, fn in [
         ("whole thread in one call", t_thread), ("thread with full bodies", t_thread_full),
         ("Hebrew reply is right-to-left", t_hebrew_reply), ("Hebrew new mail is right-to-left", t_hebrew_new_mail),
@@ -514,6 +599,25 @@ async def scenario_send_enabled(r: Run):
         out = await r.call("outlook_send_draft", entry_id=d["entry_id"])
         assert out["status"] == "sent" and "Dana Levi" in out["to"], out
         return "reviewed draft sent"
+
+    async def t_forward_external_refused():
+        try:
+            await r.call("outlook_create_rule", name="fw", conditions={"subject_words": ["x"]},
+                         actions={"redirect_to": ["someone@gmail.com"]})
+        except ToolError as exc:
+            assert "own organization" in str(exc), exc
+            return "external redirect refused"
+        raise AssertionError("external forward accepted")
+
+    async def t_forward_internal_ok():
+        out = await r.call("outlook_create_rule", name="fw", conditions={"subject_words": ["urgent"]},
+                           actions={"forward_to": ["Yossi"]}, confirm=True)
+        assert out["status"] == "created" and out["rule"]["actions"]["forward_to"] == ["yossi@contoso.com"], out
+        return "internal forward allowed with sending on"
+
+    for name, fn in [("rule: external forward refused", t_forward_external_refused),
+                     ("rule: internal forward allowed", t_forward_internal_ok)]:
+        await r.check(name, fn())
 
     for name, fn in [("send when enabled", t_send), ("unresolved recipient", t_unresolved),
                      ("send_draft when enabled", t_send_draft)]:

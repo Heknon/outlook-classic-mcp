@@ -150,7 +150,7 @@ the server send, add `"env": { "OUTLOOK_MCP_ALLOW_SEND": "1" }` — see
 
 ## Tools
 
-38 tools across 9 categories, all prefixed `outlook_*`.
+44 tools across 9 categories, all prefixed `outlook_*`.
 
 | Category       | Tools |
 | -------------- | ----- |
@@ -159,8 +159,8 @@ the server send, add `"env": { "OUTLOOK_MCP_ALLOW_SEND": "1" }` — see
 | Calendar       | `list_events`, `get_event`, `create_event`, `update_event`, `delete_event`, `respond_event`, `get_free_busy`, `find_meeting_times` |
 | Contacts       | `list_contacts`, `search_contacts` (saved contacts + org directory), `get_contact`, `resolve_name` (Ctrl+K: name → address, with candidates when ambiguous) |
 | Tasks          | `list_tasks`, `create_task`, `complete_task` |
-| Categories     | `list_categories`, `set_category` |
-| Rules          | `list_rules`, `toggle_rule` |
+| Categories     | `list_categories`, `create_category`, `update_category`, `delete_category`, `set_category` |
+| Rules          | `list_rules`, `create_rule`, `run_rule`, `delete_rule`, `toggle_rule` |
 | Out-of-Office  | `get_out_of_office` |
 | Account        | `whoami` — sanity check; shows the bound mailbox |
 
@@ -186,6 +186,43 @@ archive and shared mailboxes must be open in Outlook's folder pane.
   several people match, it returns the candidates to choose from.
 - `search_mails_by_person(person="Dana", direction="from")` finds mails
   from and/or to someone by name, across Inbox and Sent Items.
+
+### Categories (colours)
+
+- `create_category(name, color)`, `update_category` (recolour / rename),
+  `delete_category`; colours by name: red, orange, yellow, green, teal,
+  blue, purple, gray, dark blue (navy), gold, brown, … (all 25 of
+  Outlook's).
+- `set_category` colours mails, meetings and tasks: one item or many at
+  once (`entry_ids` from a search), `mode` replace / add / remove, and a
+  single occurrence of a recurring meeting with `occurrence_start`.
+  Category names that don't exist yet are created (in `color`), so they
+  always show in colour.
+- `create_event` / `update_event` take `categories` too; a meeting shows
+  in the calendar in its first category's colour.
+
+### Rules
+
+- `create_rule(name, conditions, actions, exceptions)` builds an
+  incoming-mail rule like Outlook's Rules wizard. Conditions: from,
+  sent to, words in subject / body / sender address / header, to me /
+  only to me / CC me, has attachment, importance, category. Actions: move
+  or copy to a folder, assign categories (created if missing), flag for
+  follow-up, delete, stop processing, desktop alert, forward / redirect.
+- **Preview first.** Without `confirm=true` it returns the rule in plain
+  terms and which of the last 30 days' Inbox mail it would have caught,
+  and changes nothing. `run_rule` (apply to existing mail) and
+  `delete_rule` work the same way.
+- `list_rules(details=true)` explains what each existing rule does.
+- **Forward / redirect rules** send mail automatically, so they're
+  refused in draft-only mode (the default). With sending allowed they may
+  only target your own email domain, unless
+  `OUTLOOK_MCP_ALLOW_EXTERNAL_FORWARD=1` (extra domains:
+  `OUTLOOK_MCP_INTERNAL_DOMAINS=corp.com,corp.co.il`).
+- Rules are saved to Exchange. Saving rewrites the whole rule list (that's
+  Outlook's API), so avoid editing rules in Outlook or OWA at the same
+  moment. If Outlook makes a rule client-only (it runs only while
+  Outlook is open), the result says so.
 
 ### Threads
 
@@ -385,6 +422,8 @@ with `OUTLOOK_MCP_ALLOWED_PATHS` (`;`-separated), or set
 | -------- | ------ |
 | `OUTLOOK_MCP_ALLOW_SEND=1` | Allow sending. Off by default: everything is saved as a draft; see [Safety](#safety-drafts-first). |
 | `OUTLOOK_MCP_DRAFT_ONLY=1` | Force draft-only even if sending is allowed. |
+| `OUTLOOK_MCP_ALLOW_EXTERNAL_FORWARD=1` | Allow forward/redirect rules to addresses outside your domain (needs sending allowed). |
+| `OUTLOOK_MCP_INTERNAL_DOMAINS` | Extra domains (comma-separated) treated as internal for forward rules. |
 | `OUTLOOK_MCP_ALLOWED_PATHS` | Extra folders for attachments / saved attachments. |
 | `OUTLOOK_MCP_ALLOW_ANY_PATH=1` | Disable the path sandbox. |
 | `OUTLOOK_MCP_SIGNATURES_DIR` | Signatures folder, if not `%APPDATA%\Microsoft\Signatures`. |
@@ -471,7 +510,8 @@ only run on Windows). CI runs both.
   address.
 - Toggling mail rules modifies live rules immediately — there is no
   staging buffer. Confirm the rule name with `outlook_list_rules`
-  before calling `outlook_toggle_rule`.
+  before calling `outlook_toggle_rule`. Creating, running and deleting
+  rules preview first and need `confirm=true`.
 - This server is **local-only**. Do not expose it over a network.
 
 ---

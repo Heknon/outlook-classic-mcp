@@ -498,37 +498,69 @@ Marks the task 100% complete. Returns `{ status: "completed", entry_id }`.
 
 ### `outlook_list_categories`
 
-Returns the color categories defined in the user's Outlook profile: `{ count, items: [{name, color}, ...] }`. Categories are profile-wide, not per-folder.
+**Returns**: `{ count, items: [{name, color, color_code}], colors }`.
+
+### `outlook_create_category` / `outlook_update_category` / `outlook_delete_category`
+
+| Tool | Params | Notes |
+| ---- | ------ | ----- |
+| create | `name`, `color` (default `blue`) | Names can't contain `,` or `;`. |
+| update | `name`, `color?`, `new_name?` | Renaming doesn't re-tag existing items. |
+| delete | `name` | Tagged items keep the text, without colour. |
+
+Colours: none, red, orange, peach, yellow, green, teal, olive, blue, purple, maroon, steel, dark steel, gray, dark gray, black, dark red, dark orange, dark peach, dark yellow, dark green, dark teal, dark olive, dark blue, dark purple, dark maroon. Aliases: grey, navy, gold, brown, cranberry, plum, pink, turquoise.
 
 ### `outlook_set_category`
 
-Replace the categories on any item (mail, event, task).
+| Param        | Type          | Default     | Notes |
+| ------------ | ------------- | ----------- | ----- |
+| `categories` | list / string | required    | Comma-separated string or list. `""` with replace clears. |
+| `entry_id` / `entry_ids` | string / list | — | One item or up to 500. |
+| `mode`       | enum          | `replace`   | `replace`, `add`, `remove`. |
+| `occurrence_start` | ISO-8601 | `null`    | One occurrence of a recurring meeting. |
+| `create_missing` | bool      | `true`      | Create unknown categories. |
+| `color`      | string        | `null`      | Colour for created ones (default blue). |
 
-| Param        | Type   | Default | Notes |
-| ------------ | ------ | ------- | ----- |
-| `entry_id`   | string | required | |
-| `categories` | string | required | **Comma-separated names.** Empty string clears all. e.g. `"Important"` or `"Work, Follow-up"`. |
-
-This **replaces** existing categories rather than adding to them. To add `Foo` to an item that already has `Bar`, send `"Bar, Foo"`. Get the current value first via `get_mail` / `get_event` if needed.
-
----
+**Returns**: `{ status, count, items: [{entry_id, subject, categories}], created_categories?, errors? }`.
 
 ## Rules
 
 ### `outlook_list_rules`
 
-Returns the user's mail rules with their on/off state: `{ count, items: [{index, name, enabled}] }`.
+`details=true` adds, per rule: `runs_on`, `client_only`, `conditions`, `exceptions`, `actions` in the same terms `create_rule` uses.
+
+### `outlook_create_rule`
+
+| Param        | Type            | Default | Notes |
+| ------------ | --------------- | ------- | ----- |
+| `name`       | string          | required | |
+| `conditions` | RuleConditions  | required | `{}` = every incoming message (warned). |
+| `actions`    | RuleActions     | required | At least one. |
+| `exceptions` | RuleConditions  | `null`  | Except when these hold. |
+| `enabled`    | bool            | `true`  | |
+| `replace`    | bool            | `false` | Replace a rule with the same name. |
+| `run_now`    | bool            | `false` | Also apply to the Inbox after creating. |
+| `confirm`    | bool            | `false` | **False = preview only.** |
+
+RuleConditions (all set ones must hold; word lists match ANY word): `from_people`, `sent_to`, `subject_words`, `body_words`, `subject_or_body_words`, `sender_address_words`, `recipient_address_words`, `header_words`, `categories`, `importance` (low/normal/high), `to_me`, `only_to_me`, `cc_me`, `to_or_cc_me`, `has_attachment`.
+
+RuleActions: `move_to_folder`, `copy_to_folder`, `categories` (+ `category_color`), `clear_categories`, `mark_as_task` (today/tomorrow/this_week/next_week/no_date), `delete`, `delete_permanently`, `stop_processing`, `desktop_alert`, `forward_to`, `forward_as_attachment_to`, `redirect_to`.
+
+**Preview returns**: `{ status: "preview", rule, matches: {folder, scanned, days, would_match, examples}, replaces_existing, notes?, next }`. **Created**: `{ status: "created"|"replaced", rule (as listed with details), ran_on_inbox?, notes? }`.
+
+Forward/redirect: refused in draft-only mode; otherwise only to the user's domain (+ `OUTLOOK_MCP_INTERNAL_DOMAINS`) unless `OUTLOOK_MCP_ALLOW_EXTERNAL_FORWARD=1`.
+
+### `outlook_run_rule`
+
+Apply an existing rule to mail already in `folder` (default inbox), `include_subfolders`, `which` = all/read/unread. Preview first (`confirm=false`) shows the matching messages; running moves/deletes/tags them.
+
+### `outlook_delete_rule`
+
+`name`, `confirm`. Preview shows the rule; `confirm=true` deletes it.
 
 ### `outlook_toggle_rule`
 
-| Param       | Type   | Default | Notes |
-| ----------- | ------ | ------- | ----- |
-| `rule_name` | string | required | **Exact** name from `list_rules`. |
-| `enabled`   | bool   | required | `true` to enable, `false` to disable. |
-
-This change is live the moment it's saved — no staging buffer. Confirm the rule name with the user before calling.
-
----
+`rule_name` (case-insensitive), `enabled`. Live immediately.
 
 ## Out-of-Office
 
