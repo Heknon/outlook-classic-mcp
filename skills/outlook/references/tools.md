@@ -4,7 +4,7 @@ Every `outlook_*` tool, with parameters, defaults, return shape, and notes on ch
 
 ## Contents
 
-- [Mail](#mail) — list_mails, search_mails, get_mail, send_mail, reply_mail, forward_mail, send_draft, list_signatures, move_mail, delete_mail, mark_mail, save_attachments
+- [Mail](#mail) — list_mails, search_mails, search_mails_by_person, get_mail, send_mail, reply_mail, forward_mail, send_draft, list_signatures, move_mail, delete_mail, mark_mail, save_attachments
 - [Folders](#folders) — list_folders, create_folder
 - [Calendar](#calendar) — list_events, get_event, create_event, update_event, delete_event, respond_event, get_free_busy, find_meeting_times
 - [Contacts](#contacts) — list_contacts, search_contacts, get_contact, resolve_name
@@ -53,6 +53,21 @@ Search a single folder by subject/body, subject-only, sender, or raw DASL. Read-
 Multi-word queries match items containing **all** the words (not the exact phrase), so `"teams not working"` finds "MESP-1 teams is not working". `scope='from'` matches display name, raw address, **and** the real SMTP address (works for Exchange senders too).
 
 `scope='dasl'` is for power use — pass a complete `@SQL=...` filter and the server applies it raw. Only reach for this when subject_body/subject/from can't express what the user wants.
+
+### `outlook_search_mails_by_person`
+
+Find mails exchanged with someone given just their name ("emails from Dana", "what did I send Yossi last week").
+
+| Param       | Type      | Default | Notes |
+| ----------- | --------- | ------- | ----- |
+| `person`    | string    | required | Name, partial name, alias or address — resolved like Ctrl+K first. |
+| `direction` | enum      | `"any"` | `from` (they sent it), `to` (they were on To/CC), `any`. |
+| `folders`   | list[str] | inbox + sent | Inbox only for `from`. |
+| `since`     | ISO-8601  | `null`  | |
+| `limit`     | int 1–100 | `25`    | |
+| `response_format` | str | `markdown` | |
+
+**Returns**: `{ person, direction, folders, count, items: [...] }`, items as in `list_mails` plus `folder`. If the name matches several people, nothing is searched: `{ status: "ambiguous", candidates, count: 0, items: [] }` — ask which person, then call again with their `smtp_address`.
 
 ### `outlook_get_mail`
 
@@ -398,13 +413,17 @@ Full contact record (saved contacts only — needs an `entry_id`). Returns the s
 
 ### `outlook_resolve_name`
 
-Resolve a display name, alias, or address to its SMTP address — same mechanism as typing a name in To: and pressing Ctrl+K. Use before sending when you only know a person's name.
+Check names, like typing a name in To: and pressing **Ctrl+K**: get a person's email address from a full or partial name, alias or address. Searches your contacts and the organization's address book.
 
 | Param  | Type   | Default | Notes |
 | ------ | ------ | ------- | ----- |
-| `name` | string | required | Full names resolve best; short fragments are often ambiguous. |
+| `name` | string | required | Full name, part of a name, alias (`dcohen`) or address. |
+| `max_candidates` | int 1–50 | `10` | |
 
-**Returns**: `{ resolved: true, query, display_name, smtp_address }` or `{ resolved: false, query, note }`. Ambiguous names do **not** resolve — fall back to `search_contacts` to browse candidates.
+**Returns** one of:
+- `{ status: "resolved", resolved: true, person: {display_name, smtp_address, job_title, department, office, phone, alias}, display_name, smtp_address }`
+- `{ status: "ambiguous", resolved: false, candidates: [{display_name, smtp_address, job_title, department, office, source}], note }` — **ask the user which one**; don't guess.
+- `{ status: "not_found", resolved: false, note }`
 
 ---
 

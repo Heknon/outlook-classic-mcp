@@ -914,3 +914,97 @@ def save_attachments(
         "files": saved,
         "output_dir": out_dir,
     }
+
+
+# PR_SENDER_SMTP_ADDRESS (the sender) — SMTP_PROPTAG above is the
+# "sent representing" variant; together they cover delegates sending on
+# someone's behalf.
+SENDER_SMTP_PROPTAG = "http://schemas.microsoft.com/mapi/proptag/0x5D01001F"
+
+_DIRECTIONS = ("from", "to", "any")
+
+
+def search_mails_by_person(
+    outlook: Any,
+    namespace: Any,
+    *,
+    person: str,
+    direction: str = "any",
+    folders: list[str] | None = None,
+    since: str | None = None,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """Find mails from and/or to a person given a (partial) name or address.
+
+    The person is resolved like Ctrl+K first. If the name is ambiguous,
+    no search is run and the candidates are returned instead.
+    """
+    from outlook_mcp.client.contacts import lookup_person
+
+    if direction not in _DIRECTIONS:
+        raise OutlookError("direction must be one of: 'from', 'to', 'any'.")
+    who = lookup_person(namespace, person)
+    if who["status"] != "resolved":
+        return {**who, "count": 0, "items": []}
+    p = who["person"]
+    smtp = str(p.get("smtp_address") or "")
+    name = str(p.get("display_name") or "")
+    legacy = str(p.get("legacy_address") or "")
+
+    def esc(v: str) -> str:
+        return safe_dasl(v)
+
+    from_clauses = []
+    if smtp:
+        from_clauses += [
+            f"\"{SENDER_SMTP_PROPTAG}\" = '{esc(smtp)}'",
+            f"\"{SMTP_PROPTAG}\" = '{esc(smtp)}'",
+            f"\"urn:schemas:httpmail:fromemail\" = '{esc(smtp)}'",
+        ]
+    if legacy and legacy.lower() != smtp.lower():
+        from_clauses.append(f"\"urn:schemas:httpmail:fromemail\" = '{esc(legacy)}'")
+    if name:
+        from_clauses.append(f"\"urn:schemas:httpmail:fromname\" = '{esc(name)}'")
+    # To/CC display strings hold names (and bare addresses for externals).
+    to_clauses = []
+    for value in {v for v in (name, smtp) if v}:
+        to_clauses += [
+            f"\"urn:schemas:httpmail:displayto\" LIKE '%{esc(value)}%'",
+            f"\"urn:schemas:httpmail:displaycc\" LIKE '%{esc(value)}%'",
+        ]
+    clauses = {"from": from_clauses, "to": to_clauses, "any": from_clauses + to_clauses}[direction]
+    if not clauses:
+        raise OutlookError(f"Couldn't determine an address or name for '{person}'.")
+    where = "(" + " OR ".join(clauses) + ")"
+    since_dt = from_iso(since)
+    if since_dt:
+        where += f" AND \"urn:schemas:httpmail:datereceived\" >= '{to_dasl_date(since_dt)}'"
+
+    if folders is None:
+        folders = ["inbox", "sent"] if direction != "from" else ["inbox"]
+    results: list[dict[str, Any]] = []
+    searched: list[str] = []
+    for spec in folders:
+        f = resolve_folder(namespace, spec)
+        searched.append(f.Name)
+        items = f.Items.Restrict("@SQL=" + where)
+        items.Sort("[ReceivedTime]", True)
+        n = 0
+        for item in items:
+            if _safe_get(item, "Class") not in (OL_CLASS_MAIL, OL_CLASS_MEETING_REQUEST):
+                continue
+            row = _mail_summary(item)
+            row["folder"] = f.Name
+            results.append(row)
+            n += 1
+            if n >= limit:
+                break
+    results.sort(key=lambda r: r.get("received") or "", reverse=True)
+    results = results[:limit]
+    return {
+        "person": p,
+        "direction": direction,
+        "folders": searched,
+        "count": len(results),
+        "items": results,
+    }

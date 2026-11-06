@@ -135,19 +135,27 @@ the server send, add `"env": { "OUTLOOK_MCP_ALLOW_SEND": "1" }` — see
 
 ## Tools
 
-35 tools across 9 categories, all prefixed `outlook_*`.
+36 tools across 9 categories, all prefixed `outlook_*`.
 
 | Category       | Tools |
 | -------------- | ----- |
-| Mail           | `list_mails`, `search_mails`, `get_mail`, `send_mail`, `reply_mail`, `forward_mail`, `send_draft`, `list_signatures`, `move_mail`, `delete_mail`, `mark_mail`, `save_attachments` |
+| Mail           | `list_mails`, `search_mails`, `search_mails_by_person`, `get_mail`, `send_mail`, `reply_mail`, `forward_mail`, `send_draft`, `list_signatures`, `move_mail`, `delete_mail`, `mark_mail`, `save_attachments` |
 | Folders        | `list_folders`, `create_folder` |
 | Calendar       | `list_events`, `get_event`, `create_event`, `update_event`, `delete_event`, `respond_event`, `get_free_busy`, `find_meeting_times` |
-| Contacts       | `list_contacts`, `search_contacts` (saved contacts + org directory), `get_contact`, `resolve_name` |
+| Contacts       | `list_contacts`, `search_contacts` (saved contacts + org directory), `get_contact`, `resolve_name` (Ctrl+K: name → address, with candidates when ambiguous) |
 | Tasks          | `list_tasks`, `create_task`, `complete_task` |
 | Categories     | `list_categories`, `set_category` |
 | Rules          | `list_rules`, `toggle_rule` |
 | Out-of-Office  | `get_out_of_office` |
 | Account        | `whoami` — sanity check; shows the bound mailbox |
+
+### People
+
+- `resolve_name` works like **Ctrl+K**: give it a full or partial name or
+  alias and get the person's address, title, department and office. If
+  several people match, it returns the candidates to choose from.
+- `search_mails_by_person(person="Dana", direction="from")` finds mails
+  from and/or to someone by name, across Inbox and Sent Items.
 
 ### Drafting
 

@@ -114,7 +114,10 @@ def _search_directory(namespace: Any, words: list[str], limit: int) -> list[dict
         return out  # no Exchange directory on this profile
     for entry in entries:
         name = str(_safe_get(entry, "Name", "") or "")
-        if not _matches_all(name.lower(), words):
+        # Address is cheap to read and, for Exchange entries, is the legacy
+        # DN ending in the alias (".../cn=jsmith"), so "jsmith" matches too.
+        address = str(_safe_get(entry, "Address", "") or "")
+        if not _matches_all(f"{name} {address}".lower(), words):
             continue
         row: dict[str, Any] = {
             "full_name": name,
@@ -133,6 +136,8 @@ def _search_directory(namespace: Any, words: list[str], limit: int) -> list[dict
             row["company"] = _safe_get(exu, "CompanyName")
             row["job_title"] = _safe_get(exu, "JobTitle")
             row["mobile"] = _safe_get(exu, "MobileTelephoneNumber")
+            row["department"] = _safe_get(exu, "Department")
+            row["office"] = _safe_get(exu, "OfficeLocation")
         out.append(row)
         if len(out) >= limit:
             break
@@ -191,35 +196,85 @@ def get_contact(outlook: Any, namespace: Any, *, entry_id: str) -> dict[str, Any
     return _contact_full(get_item_by_id(namespace, entry_id))
 
 
-def resolve_name(outlook: Any, namespace: Any, *, name: str) -> dict[str, Any]:
-    """Resolve a name or address against the address book / directory.
-
-    Same mechanism Outlook uses when you type a name in To: and press
-    Ctrl+K. Unique matches resolve; ambiguous ones don't (no UI is
-    shown), in which case the caller should try a fuller name.
-    """
-    recipient = namespace.CreateRecipient(name)
-    recipient.Resolve()
-    if not recipient.Resolved:
-        return {
-            "resolved": False,
-            "query": name,
-            "note": (
-                "No unique match. Try the full display name or the exact "
-                "address, or use outlook_search_contacts to browse matches."
-            ),
-        }
-    entry = recipient.AddressEntry
+def _entry_details(entry: Any) -> dict[str, Any]:
     smtp = _safe_get(entry, "Address")
+    details: dict[str, Any] = {"display_name": _safe_get(entry, "Name")}
     try:
         exu = entry.GetExchangeUser()
     except Exception:
         exu = None
-    if exu is not None and _safe_get(exu, "PrimarySmtpAddress"):
-        smtp = exu.PrimarySmtpAddress
+    if exu is not None:
+        if _safe_get(exu, "PrimarySmtpAddress"):
+            smtp = exu.PrimarySmtpAddress
+        details.update(
+            {
+                "job_title": _safe_get(exu, "JobTitle"),
+                "department": _safe_get(exu, "Department"),
+                "office": _safe_get(exu, "OfficeLocation"),
+                "phone": _safe_get(exu, "BusinessTelephoneNumber"),
+                "alias": _safe_get(exu, "Alias"),
+            }
+        )
+    details["smtp_address"] = smtp
+    details["legacy_address"] = _safe_get(entry, "Address")
+    return {k: v for k, v in details.items() if v not in (None, "")}
+
+
+def lookup_person(namespace: Any, name: str, max_candidates: int = 10) -> dict[str, Any]:
+    """Ctrl+K: resolve a (partial) name, or list the candidates.
+
+    Returns ``{"status": "resolved", "person": {...}}`` for a unique match,
+    ``{"status": "ambiguous", "candidates": [...]}`` when several people
+    match, or ``{"status": "not_found"}``.
+    """
+    recipient = namespace.CreateRecipient(name)
+    try:
+        recipient.Resolve()
+    except Exception:
+        pass
+    if _safe_get(recipient, "Resolved", False):
+        return {"status": "resolved", "query": name, "person": _entry_details(recipient.AddressEntry)}
+
+    found = search_contacts(None, namespace, query=name, limit=max_candidates)
+    candidates = [
+        {
+            k: v
+            for k, v in {
+                "display_name": row.get("full_name"),
+                "smtp_address": row.get("email"),
+                "job_title": row.get("job_title"),
+                "department": row.get("department"),
+                "office": row.get("office"),
+                "company": row.get("company"),
+                "source": row.get("source"),
+            }.items()
+            if v
+        }
+        for row in found["items"]
+    ]
+    candidates = [c for c in candidates if c.get("smtp_address") or c.get("display_name")]
+    if len(candidates) == 1 and candidates[0].get("smtp_address"):
+        return {"status": "resolved", "query": name, "person": candidates[0]}
+    if candidates:
+        return {
+            "status": "ambiguous",
+            "query": name,
+            "candidates": candidates,
+            "note": "Several people match. Ask the user which one, then use their smtp_address.",
+        }
     return {
-        "resolved": True,
+        "status": "not_found",
         "query": name,
-        "display_name": _safe_get(entry, "Name"),
-        "smtp_address": smtp,
+        "note": "Nobody in your contacts or the address book matches. Try another spelling or the email address.",
     }
+
+
+def resolve_name(outlook: Any, namespace: Any, *, name: str, max_candidates: int = 10) -> dict[str, Any]:
+    """Resolve a name like Ctrl+K in Outlook (with candidates when ambiguous)."""
+    out = lookup_person(namespace, name, max_candidates)
+    # Backwards-compatible fields.
+    out["resolved"] = out["status"] == "resolved"
+    if out["resolved"]:
+        out["display_name"] = out["person"].get("display_name")
+        out["smtp_address"] = out["person"].get("smtp_address")
+    return out

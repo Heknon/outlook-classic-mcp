@@ -89,7 +89,7 @@ def register(mcp, bridge) -> None:
     @mcp.tool(
         name="outlook_resolve_name",
         annotations={
-            "title": "Resolve a name to an email address",
+            "title": "Check names (Ctrl+K): find a person's email address",
             "readOnlyHint": True,
             "destructiveHint": False,
             "idempotentHint": True,
@@ -102,16 +102,21 @@ def register(mcp, bridge) -> None:
             str,
             Field(
                 min_length=1,
-                description="Display name, alias, or address to resolve (like Ctrl+K in Outlook).",
+                description="Display name, partial name, alias, or address (like Ctrl+K in Outlook).",
             ),
         ],
+        max_candidates: Annotated[int, Field(ge=1, le=50)] = 10,
     ) -> str:
-        """Resolve a name against the address book/directory to its SMTP address.
+        """Check a name like Ctrl+K: get someone's email address from their name.
 
-        Use before sending when you only know a person's name. Ambiguous
-        names won't resolve — fall back to outlook_search_contacts.
+        Returns status 'resolved' with the person (address, title,
+        department, office, phone), 'ambiguous' with the candidates to
+        choose from (ask the user which one), or 'not_found'. Searches your
+        contacts and the organization's address book.
         """
-        data = await bridge.call(contacts_client.resolve_name, name=name)
+        data = await bridge.call(
+            contacts_client.resolve_name, name=name, max_candidates=max_candidates
+        )
         return format_response(data, "json")
 
     @mcp.tool(

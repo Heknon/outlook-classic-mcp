@@ -13,6 +13,7 @@ from outlook_mcp.server import build_server
 UI_TOOLS = {
     "outlook_list_mails": "ui://outlook/mail-list.html",
     "outlook_search_mails": "ui://outlook/mail-list.html",
+    "outlook_search_mails_by_person": "ui://outlook/mail-list.html",
     "outlook_get_mail": "ui://outlook/mail-view.html",
     "outlook_list_events": "ui://outlook/calendar.html",
     "outlook_list_contacts": "ui://outlook/contacts.html",

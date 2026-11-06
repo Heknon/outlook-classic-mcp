@@ -112,6 +112,53 @@ def register(mcp, bridge) -> None:
         return ui_result(format_response(data, response_format), data)
 
     @mcp.tool(
+        name="outlook_search_mails_by_person",
+        annotations={
+            "title": "Find mails from/to a person",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+        meta=ui_meta("mail-list"),
+        structured_output=False,
+    )
+    @safe_call
+    async def outlook_search_mails_by_person(
+        person: Annotated[
+            str,
+            Field(min_length=1, description="Name, partial name, alias or email address (resolved like Ctrl+K)."),
+        ],
+        direction: Annotated[
+            str,
+            Field(description="'from' (sent by them), 'to' (they were on To/CC), or 'any'."),
+        ] = "any",
+        folders: Annotated[
+            Optional[list[str]],
+            Field(description="Folders to search. Default: inbox and sent (inbox only for 'from')."),
+        ] = None,
+        since: Annotated[Optional[str], Field(description="Only mails received after this ISO-8601 time.")] = None,
+        limit: Annotated[int, Field(ge=1, le=100)] = 25,
+        response_format: Annotated[str, Field(description="'markdown' or 'json'.")] = "markdown",
+    ) -> CallToolResult:
+        """Find mails exchanged with a person, given just their name.
+
+        The name is resolved against your contacts and the address book first.
+        If several people match, no search is run: the result has
+        status 'ambiguous' and the candidates — ask the user which one, then
+        call again with that person's email address.
+        """
+        data = await bridge.call(
+            mail_client.search_mails_by_person,
+            person=person,
+            direction=direction,
+            folders=folders,
+            since=since,
+            limit=limit,
+        )
+        return ui_result(format_response(data, response_format), data)
+
+    @mcp.tool(
         name="outlook_get_mail",
         annotations={
             "title": "Get full Outlook mail",

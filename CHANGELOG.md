@@ -2,6 +2,12 @@
 
 ## 0.5.0
 
+- `outlook_resolve_name` works like Ctrl+K: partial names and aliases,
+  and a list of candidates (title, department, office) when several people
+  match instead of just failing.
+- New `outlook_search_mails_by_person`: mails from and/or to a person by
+  name, across Inbox and Sent Items; returns candidates when the name is
+  ambiguous.
 - **Draft-only is now the default.** Nothing is sent unless
   `OUTLOOK_MCP_ALLOW_SEND=1` is set; `OUTLOOK_MCP_DRAFT_ONLY=1` still forces
   draft-only.

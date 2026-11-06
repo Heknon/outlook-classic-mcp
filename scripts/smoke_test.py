@@ -210,13 +210,42 @@ def main() -> int:
             raise
         return f"{out['count']} events visible"
 
+    @check("Ctrl+K name lookup (your own first name)")
+    def t_ctrlk():
+        from outlook_mcp.client import contacts
+
+        first = str(state.get("me", "")).split()[0] if state.get("me") else ""
+        if not first:
+            return "SKIP: no name"
+        out = contacts.resolve_name(outlook, ns, name=first)
+        mine = my_address().lower()
+        if out["status"] == "resolved":
+            return f"resolved to {out['smtp_address']}"
+        assert out["status"] == "ambiguous", out
+        addrs = [str(c.get("smtp_address", "")).lower() for c in out["candidates"]]
+        return f"{len(addrs)} candidates" + (", including you" if mine in addrs else "")
+
+    @check("mails from the newest sender, by name")
+    def t_by_person():
+        newest = state.get("newest")
+        if not newest or not newest.get("from"):
+            return "SKIP: no inbox mail"
+        out = mail.search_mails_by_person(outlook, ns, person=newest["from"], direction="from", limit=5)
+        if out.get("status") == "ambiguous":
+            return f"SKIP: '{newest['from']}' is ambiguous ({len(out['candidates'])} people)"
+        if out.get("status") == "not_found":
+            return f"SKIP: '{newest['from']}' not in the address book (external sender?)"
+        assert out["count"] >= 1, f"no mails found from {newest['from']}"
+        return f"{out['count']} from {out['person'].get('smtp_address')}"
+
     @check("signatures")
     def t_sigs():
         out = mail.list_signatures_info(outlook, ns)
         return f"{len(out['signatures'])} found; default new={out['default_new']!r}, reply={out['default_reply_forward']!r}"
 
     for t in (t_whoami, t_list, t_since, t_reply_draft, t_send_refused, t_event,
-              t_list_events, t_fb_me, t_find_me, t_colleague, t_shared, t_sigs):
+              t_list_events, t_fb_me, t_find_me, t_colleague, t_shared, t_ctrlk,
+              t_by_person, t_sigs):
         t()
 
     if not args.keep:
