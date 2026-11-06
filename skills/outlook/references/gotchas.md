@@ -63,7 +63,15 @@ Use `outlook_reply_mail(..., save_only=true)` (or `outlook_forward_mail(..., sav
 
 ## Everything ends up in Drafts and `send_draft` is refused
 
-The server is running in draft-only mode (`OUTLOOK_MCP_DRAFT_ONLY=1`); the result's `notes` say so. That's the user's (or IT's) choice — don't look for a way around it. Tell them the draft is waiting in Outlook.
+Draft-only is the server's default; the result's `notes` say so. Don't look for a way around it. Tell the user the draft is waiting in Outlook. If they want the server to send, they set `OUTLOOK_MCP_ALLOW_SEND=1` in the MCP client config and restart it (unless `OUTLOOK_MCP_DRAFT_ONLY=1` is also set, which always wins).
+
+## "Can't open Ann's calendar"
+
+Reading someone's calendar items needs them to share it with the user (Reviewer) or a delegate grant. Most people only publish free/busy. Use `outlook_get_free_busy` / `outlook_find_meeting_times` instead — they need no permission, but show only busy/tentative/out-of-office, not meeting titles.
+
+## Free/busy missing for someone
+
+External addresses and some resources have no free/busy in the organization. They appear under `problems` and are left out of `find_meeting_times`; tell the user their availability couldn't be checked.
 
 ## Signature missing, doubled, or images broken
 

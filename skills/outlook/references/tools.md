@@ -6,7 +6,7 @@ Every `outlook_*` tool, with parameters, defaults, return shape, and notes on ch
 
 - [Mail](#mail) — list_mails, search_mails, get_mail, send_mail, reply_mail, forward_mail, send_draft, list_signatures, move_mail, delete_mail, mark_mail, save_attachments
 - [Folders](#folders) — list_folders, create_folder
-- [Calendar](#calendar) — list_events, get_event, create_event, update_event, delete_event, respond_event
+- [Calendar](#calendar) — list_events, get_event, create_event, update_event, delete_event, respond_event, get_free_busy, find_meeting_times
 - [Contacts](#contacts) — list_contacts, search_contacts, get_contact, resolve_name
 - [Tasks](#tasks) — list_tasks, create_task, complete_task
 - [Categories](#categories) — list_categories, set_category
@@ -238,9 +238,10 @@ List calendar events overlapping a date range, including expanded recurring inst
 | `end`                 | ISO-8601| `start + 14d`  | |
 | `limit`               | int 1–200| `50`          | |
 | `include_recurrences` | bool    | `true`         | If false, only the master entries — usually you want true. |
+| `mailbox`             | string  | `null`         | Someone else's calendar (address or name). Needs them to have shared it with you; otherwise use free/busy. |
 | `response_format`     | str     | `markdown`     | |
 
-**Returns**: `{ start, end, count, items: [...], truncated }`. Items: `entry_id, subject, start, end, location, organizer, is_recurring, recurrence ("none" | "series" | "occurrence" | "exception"), all_day, preview`.
+**Returns**: `{ start, end, count, items: [...], truncated, mailbox? }`. Items: `entry_id, subject, start, end, location, organizer, is_recurring, recurrence ("none" | "series" | "occurrence" | "exception"), all_day, preview`.
 
 ### `outlook_get_event`
 
@@ -250,6 +251,7 @@ Full event detail, including attendees and their RSVP status.
 | ---------- | ------ | ------- | ----- |
 | `entry_id` | string | required | |
 | `occurrence_start` | ISO-8601 | `null` | One occurrence of a series. |
+| `mailbox`  | string | `null` | The calendar owner, for events listed with `mailbox`. |
 | `response_format` | str | `markdown` | |
 
 **Returns**: summary fields + `body, attendees: [{name, address, type, response}], reminder_minutes, categories`.
@@ -324,6 +326,40 @@ Respond to a meeting invite.
 | `occurrence_start` | ISO-8601 | `null` | Respond to one occurrence. |
 
 **Returns**: `{ status: "responded" | "response_saved_to_drafts", response }`.
+
+### `outlook_get_free_busy`
+
+When people are busy, from Exchange free/busy. Works for anyone in the organization without calendar permission; shows no meeting details.
+
+| Param      | Type      | Default | Notes |
+| ---------- | --------- | ------- | ----- |
+| `people`   | list[str] | required | Addresses or names (1–30). |
+| `start` / `end` | ISO-8601 | now / +1 day | At most 62 days. |
+| `interval_minutes` | int 5–60 | `30` | Resolution. |
+| `include_me` | bool | `false` | |
+
+**Returns**: `{ start, end, interval_minutes, people: [{name, busy: [{start, end, status}]}], problems? }`. `status` is `busy`, `tentative`, `out_of_office`, `working_elsewhere` or `unknown`. People whose free/busy can't be read (external, unresolvable) are under `problems`.
+
+### `outlook_find_meeting_times`
+
+Scheduling assistant: slots when you and all required attendees are free.
+
+| Param      | Type      | Default | Notes |
+| ---------- | --------- | ------- | ----- |
+| `attendees` | list[str] | required | Required attendees. |
+| `duration_minutes` | int | `30` | |
+| `optional_attendees` | list[str] | `null` | Listed per slot under `optional_busy` if they can't make it. |
+| `start` / `end` | ISO-8601 | now / +7 days | |
+| `day_start` / `day_end` | HH:MM | `09:00` / `17:00` | Local working hours; the meeting must fit inside. |
+| `working_days` | list[str] | Mon–Fri | e.g. `["sun","mon","tue","wed","thu"]`. |
+| `step_minutes` | int | `30` | Start-time grid: 5, 10, 15, 20, 30 or 60. |
+| `include_me` | bool | `true` | Require the user to be free too. |
+| `tentative_is_free` | bool | `false` | |
+| `max_results` / `max_per_day` | int | `10` / `3` | |
+
+**Returns**: `{ duration_minutes, searched, required, optional, count, slots: [{start, end, optional_busy?, tentative?}], problems?, notes? }`. "Working elsewhere" counts as available; unknown free/busy (beyond published data) counts as busy.
+
+Then create the meeting with `outlook_create_event(attendees=..., start=slot.start, end=slot.end)`.
 
 ---
 

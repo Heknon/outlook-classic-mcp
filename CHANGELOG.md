@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0
+
+- **Draft-only is now the default.** Nothing is sent unless
+  `OUTLOOK_MCP_ALLOW_SEND=1` is set; `OUTLOOK_MCP_DRAFT_ONLY=1` still forces
+  draft-only.
+- `outlook_list_events` / `outlook_get_event` take `mailbox` to read a
+  colleague's shared calendar.
+- New `outlook_get_free_busy`: busy/tentative/out-of-office blocks for anyone
+  in the organization, from Exchange free/busy (no calendar permission needed).
+- New `outlook_find_meeting_times`: scheduling assistant — slots when you and
+  all required attendees are free, within working hours and working days
+  (configurable, e.g. Sunday–Thursday), with optional attendees reported per
+  slot.
+
 ## 0.4.0 — fork of outlook-classic-mcp 0.3.2
 
 Forked from [anasahmed07/Outlook-Classic-MCP](https://github.com/anasahmed07/Outlook-Classic-MCP) at 0.3.2.

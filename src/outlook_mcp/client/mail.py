@@ -771,7 +771,8 @@ def send_draft(outlook: Any, namespace: Any, *, entry_id: str) -> dict[str, Any]
     """Send a mail that is already saved as a draft (e.g. after review)."""
     if draft_only():
         raise OutlookError(
-            "Sending is disabled: draft-only mode is on (OUTLOOK_MCP_DRAFT_ONLY). "
+            "Sending is disabled: draft-only mode is on (the default; the user can "
+            "enable sending with OUTLOOK_MCP_ALLOW_SEND=1). "
             "Send the draft from Outlook."
         )
     item = get_item_by_id(namespace, entry_id)

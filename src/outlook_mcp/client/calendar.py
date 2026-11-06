@@ -27,6 +27,14 @@ from outlook_mcp.errors import OutlookError
 from outlook_mcp.schemas import Recurrence
 from outlook_mcp.utils.formatting import from_iso, to_com, to_dasl_date, to_iso, truncate
 from outlook_mcp.utils.policy import DRAFT_ONLY_NOTE, draft_only
+from outlook_mcp.utils.scheduling import (
+    FreeBusy,
+    busy_blocks,
+    find_slots,
+    parse_free_busy,
+    parse_hhmm,
+    parse_working_days,
+)
 
 # How far before `start` to widen the Restrict() lower bound so events that
 # begin earlier but still overlap the requested window (multi-day / all-day
@@ -113,8 +121,9 @@ def list_events(
     end: str | None = None,
     limit: int = 50,
     include_recurrences: bool = True,
+    mailbox: str | None = None,
 ) -> dict[str, Any]:
-    cal = namespace.GetDefaultFolder(OL_FOLDER_CALENDAR)
+    cal, owner = calendar_folder(namespace, mailbox)
     items = cal.Items
     # Outlook requires the collection sorted ascending by [Start] BEFORE
     # IncludeRecurrences is set, or recurring series expand incorrectly.
@@ -168,6 +177,7 @@ def list_events(
         "count": len(results),
         "items": results,
         "truncated": truncated,
+        **({"mailbox": owner} if owner else {}),
     }
 
 
@@ -177,11 +187,239 @@ def get_event(
     *,
     entry_id: str,
     occurrence_start: str | None = None,
+    mailbox: str | None = None,
 ) -> dict[str, Any]:
-    return _event_full(_target_event(namespace, entry_id, occurrence_start))
+    store_id = None
+    if mailbox:
+        folder, _ = calendar_folder(namespace, mailbox)
+        store_id = _safe_get(folder, "StoreID")
+    return _event_full(_target_event(namespace, entry_id, occurrence_start, store_id))
 
 
-def _target_event(namespace: Any, entry_id: str, occurrence_start: str | None) -> Any:
+def resolve_recipient(namespace: Any, who: str) -> Any:
+    """Resolve a name or address against the address book (GAL)."""
+    recip = namespace.CreateRecipient(who)
+    try:
+        ok = recip.Resolve()
+    except Exception:
+        ok = False
+    if not ok:
+        raise OutlookError(
+            f"Couldn't find '{who}' in the address book. Use a full email address "
+            "or check the name with outlook_resolve_name."
+        )
+    return recip
+
+
+def calendar_folder(namespace: Any, mailbox: str | None) -> tuple[Any, str | None]:
+    """Your calendar, or someone else's shared calendar.
+
+    Opening another person's calendar needs at least Reviewer (read)
+    permission on it, or a delegate grant. With only the default
+    free/busy permission it fails — free/busy itself still works.
+    """
+    if not mailbox:
+        return namespace.GetDefaultFolder(OL_FOLDER_CALENDAR), None
+    recip = resolve_recipient(namespace, mailbox)
+    try:
+        folder = namespace.GetSharedDefaultFolder(recip, OL_FOLDER_CALENDAR)
+    except Exception as exc:
+        raise OutlookError(
+            f"Can't open {_safe_get(recip, 'Name', mailbox)}'s calendar — you probably "
+            "only have free/busy access. Use outlook_get_free_busy or "
+            "outlook_find_meeting_times instead, or ask them to share their "
+            "calendar with you (Reviewer permission)."
+        ) from exc
+    return folder, str(_safe_get(recip, "Name", mailbox))
+
+
+def _midnight(value: dt.datetime) -> dt.datetime:
+    return value.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _fetch_free_busy(recip: Any, start: dt.datetime, interval: int) -> FreeBusy:
+    origin = _midnight(start)
+    raw = recip.FreeBusy(to_com(origin), interval, True)
+    return parse_free_busy(str(raw or ""), origin, interval)
+
+
+def _people_free_busy(
+    namespace: Any,
+    people: list[str],
+    start: dt.datetime,
+    interval: int,
+) -> tuple[dict[str, FreeBusy], list[dict[str, str]]]:
+    found: dict[str, FreeBusy] = {}
+    problems: list[dict[str, str]] = []
+    for who in people:
+        try:
+            recip = resolve_recipient(namespace, who)
+        except OutlookError as exc:
+            problems.append({"who": who, "error": str(exc)})
+            continue
+        name = str(_safe_get(recip, "Name", who) or who)
+        try:
+            found[name] = _fetch_free_busy(recip, start, interval)
+        except Exception:
+            problems.append(
+                {
+                    "who": who,
+                    "error": "No free/busy information available (external address, "
+                    "or not published).",
+                }
+            )
+    return found, problems
+
+
+def _me_free_busy(namespace: Any, start: dt.datetime, interval: int) -> tuple[str, FreeBusy] | None:
+    me = _safe_get(namespace, "CurrentUser")
+    if me is None:
+        return None
+    try:
+        return str(_safe_get(me, "Name", "me") or "me"), _fetch_free_busy(me, start, interval)
+    except Exception:
+        return None
+
+
+def _range(start: str | None, end: str | None, default_days: int) -> tuple[dt.datetime, dt.datetime]:
+    start_dt = from_iso(start) or dt.datetime.now().replace(second=0, microsecond=0)
+    end_dt = from_iso(end) or (start_dt + dt.timedelta(days=default_days))
+    if end_dt <= start_dt:
+        raise OutlookError("end must be after start.")
+    if (end_dt - start_dt).days > 62:
+        raise OutlookError("Range too long: free/busy covers about two months; use at most 62 days.")
+    return start_dt, end_dt
+
+
+def get_free_busy(
+    outlook: Any,
+    namespace: Any,
+    *,
+    people: list[str],
+    start: str | None = None,
+    end: str | None = None,
+    interval_minutes: int = 30,
+    include_me: bool = False,
+) -> dict[str, Any]:
+    start_dt, end_dt = _range(start, end, 1)
+    found, problems = _people_free_busy(namespace, people, start_dt, interval_minutes)
+    if include_me:
+        mine = _me_free_busy(namespace, start_dt, interval_minutes)
+        if mine:
+            found = {mine[0]: mine[1], **found}
+    result = []
+    for name, fb in found.items():
+        blocks = busy_blocks(fb, start_dt, end_dt)
+        result.append(
+            {
+                "name": name,
+                "busy": [
+                    {"start": to_iso(b["start"]), "end": to_iso(b["end"]), "status": b["status"]}
+                    for b in blocks
+                ],
+            }
+        )
+    out: dict[str, Any] = {
+        "start": to_iso(start_dt),
+        "end": to_iso(end_dt),
+        "interval_minutes": interval_minutes,
+        "people": result,
+    }
+    if problems:
+        out["problems"] = problems
+    return out
+
+
+def find_meeting_times(
+    outlook: Any,
+    namespace: Any,
+    *,
+    attendees: list[str],
+    duration_minutes: int = 30,
+    optional_attendees: list[str] | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    day_start: str = "09:00",
+    day_end: str = "17:00",
+    working_days: list[str] | None = None,
+    step_minutes: int = 30,
+    include_me: bool = True,
+    tentative_is_free: bool = False,
+    max_results: int = 10,
+    max_per_day: int = 3,
+) -> dict[str, Any]:
+    start_dt, end_dt = _range(start, end, 7)
+    now = dt.datetime.now()
+    if start_dt < now:
+        start_dt = now
+    try:
+        days = parse_working_days(working_days)
+        open_t, close_t = parse_hhmm(day_start), parse_hhmm(day_end)
+    except ValueError as exc:
+        raise OutlookError(str(exc)) from exc
+    if close_t <= open_t:
+        raise OutlookError("day_end must be after day_start.")
+
+    # Free/busy resolution: fine enough for the step, and dividing an hour.
+    interval = 15 if step_minutes % 15 == 0 else 5
+    required, problems = _people_free_busy(namespace, attendees, start_dt, interval)
+    if include_me:
+        mine = _me_free_busy(namespace, start_dt, interval)
+        if mine:
+            required = {mine[0]: mine[1], **required}
+    optional, opt_problems = _people_free_busy(namespace, optional_attendees or [], start_dt, interval)
+    problems += opt_problems
+
+    slots = find_slots(
+        required,
+        optional,
+        window_start=start_dt,
+        window_end=end_dt,
+        duration=dt.timedelta(minutes=duration_minutes),
+        step_minutes=step_minutes,
+        day_start=open_t,
+        day_end=close_t,
+        working_days=days,
+        tentative_is_free=tentative_is_free,
+        max_results=max_results,
+        max_per_day=max_per_day,
+    )
+    out: dict[str, Any] = {
+        "duration_minutes": duration_minutes,
+        "searched": {"start": to_iso(start_dt), "end": to_iso(end_dt)},
+        "required": list(required),
+        "optional": list(optional),
+        "count": len(slots),
+        "slots": [
+            {
+                "start": to_iso(sl.start),
+                "end": to_iso(sl.end),
+                **({"optional_busy": sl.optional_conflicts} if sl.optional_conflicts else {}),
+                **({"tentative": sl.tentative} if sl.tentative else {}),
+            }
+            for sl in slots
+        ],
+    }
+    notes: list[str] = []
+    if problems:
+        out["problems"] = problems
+        notes.append(
+            "People listed under problems were left out of the search; check "
+            "their availability another way."
+        )
+    if not slots:
+        notes.append(
+            "No time works for everyone in that window. Try a longer range, a "
+            "shorter meeting, tentative_is_free=true, or moving someone to optional."
+        )
+    if notes:
+        out["notes"] = notes
+    return out
+
+
+def _target_event(
+    namespace: Any, entry_id: str, occurrence_start: str | None, store_id: str | None = None
+) -> Any:
     """Resolve an event, or one occurrence of a recurring series.
 
     ``list_events`` returns the *series* EntryID for every occurrence of a
@@ -189,7 +427,7 @@ def _target_event(namespace: Any, entry_id: str, occurrence_start: str | None) -
     series. ``occurrence_start`` (the occurrence's original start, as
     listed) selects the single occurrence instead.
     """
-    ev = get_item_by_id(namespace, entry_id)
+    ev = get_item_by_id(namespace, entry_id, store_id)
     if not occurrence_start:
         return ev
     if not _safe_get(ev, "IsRecurring", False):

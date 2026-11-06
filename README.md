@@ -18,7 +18,8 @@ Outlook itself handles.
 
 This is a fork of [anasahmed07/Outlook-Classic-MCP](https://github.com/anasahmed07/Outlook-Classic-MCP)
 that adds threaded reply/forward drafts, sending a reviewed draft,
-signatures, a draft-only safety mode, fuller calendar support, and the
+signatures, draft-only mode **on by default**, other people's calendars
+and a scheduling assistant, fuller calendar support, and the
 fixes from the upstream pull requests that were still waiting to be
 merged. See [What's different in this fork](#whats-different-in-this-fork).
 
@@ -119,29 +120,28 @@ server entry in its MCP config:
   "mcpServers": {
     "outlook": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/Heknon/outlook-classic-mcp", "outlook-mcp"],
-      "env": { "OUTLOOK_MCP_DRAFT_ONLY": "1" }
+      "args": ["--from", "git+https://github.com/Heknon/outlook-classic-mcp", "outlook-mcp"]
     }
   }
 }
 ```
 
 (VS Code / Copilot agent mode names the top-level key `servers` in
-`mcp.json` instead of `mcpServers`; the entry itself is the same. Drop the
-`env` line if you want the server to be able to send — see
+`mcp.json` instead of `mcpServers`; the entry itself is the same. To let
+the server send, add `"env": { "OUTLOOK_MCP_ALLOW_SEND": "1" }` — see
 [Safety](#safety-drafts-first).)
 
 ---
 
 ## Tools
 
-33 tools across 9 categories, all prefixed `outlook_*`.
+35 tools across 9 categories, all prefixed `outlook_*`.
 
 | Category       | Tools |
 | -------------- | ----- |
 | Mail           | `list_mails`, `search_mails`, `get_mail`, `send_mail`, `reply_mail`, `forward_mail`, `send_draft`, `list_signatures`, `move_mail`, `delete_mail`, `mark_mail`, `save_attachments` |
 | Folders        | `list_folders`, `create_folder` |
-| Calendar       | `list_events`, `get_event`, `create_event`, `update_event`, `delete_event`, `respond_event` |
+| Calendar       | `list_events`, `get_event`, `create_event`, `update_event`, `delete_event`, `respond_event`, `get_free_busy`, `find_meeting_times` |
 | Contacts       | `list_contacts`, `search_contacts` (saved contacts + org directory), `get_contact`, `resolve_name` |
 | Tasks          | `list_tasks`, `create_task`, `complete_task` |
 | Categories     | `list_categories`, `set_category` |
@@ -169,6 +169,17 @@ server entry in its MCP config:
 
 ### Calendar
 
+- **Other people's calendars:** `list_events(mailbox="ann@corp.com")`
+  reads a colleague's calendar if they've shared it with you (or you're
+  their delegate).
+- **Free/busy for anyone:** `get_free_busy(people=[...])` shows when
+  people are busy, tentative or out of office, from Exchange free/busy —
+  no calendar permission needed, like Outlook's Scheduling Assistant.
+- **Find a time:** `find_meeting_times(attendees=[...], duration_minutes=60)`
+  returns slots when you and every required attendee are free, within
+  working hours (`day_start`/`day_end`) and working days
+  (`working_days=["sun","mon","tue","wed","thu"]` for a Sunday–Thursday
+  week). Optional attendees who'd miss a slot are listed with it.
 - All-day events (`all_day=true`, dates only).
 - Meetings can be saved without sending invitations (`send_invites=false`).
 - `update_event` changes only your calendar unless `send_update=true`;
@@ -185,11 +196,14 @@ server entry in its MCP config:
 
 ## Safety: drafts first
 
-Set `OUTLOOK_MCP_DRAFT_ONLY=1` in the server's environment and the
-server cannot send anything: compose tools always save to Drafts,
-`send_draft` is refused, and meeting invites, updates, cancellations and
-responses are saved unsent. You review and send from Outlook. This is
-the recommended setting for a work mailbox.
+**By default the server cannot send anything.** Compose tools always save
+to Drafts, `send_draft` is refused, meeting invites and updates are saved
+unsent, cancellations are refused, and meeting responses wait in Drafts.
+You review and send from Outlook.
+
+To let it send, set `OUTLOOK_MCP_ALLOW_SEND=1` in the server's
+environment. `OUTLOOK_MCP_DRAFT_ONLY=1` always forces draft-only, even if
+sending is allowed elsewhere (useful for IT-managed configs).
 
 In Claude Code you can also gate individual tools. For example, in
 `.claude/settings.json` (tool names assume the server is registered as
@@ -317,7 +331,8 @@ with `OUTLOOK_MCP_ALLOWED_PATHS` (`;`-separated), or set
 
 | Variable | Effect |
 | -------- | ------ |
-| `OUTLOOK_MCP_DRAFT_ONLY=1` | Nothing can be sent; see [Safety](#safety-drafts-first). |
+| `OUTLOOK_MCP_ALLOW_SEND=1` | Allow sending. Off by default: everything is saved as a draft; see [Safety](#safety-drafts-first). |
+| `OUTLOOK_MCP_DRAFT_ONLY=1` | Force draft-only even if sending is allowed. |
 | `OUTLOOK_MCP_ALLOWED_PATHS` | Extra folders for attachments / saved attachments. |
 | `OUTLOOK_MCP_ALLOW_ANY_PATH=1` | Disable the path sandbox. |
 | `OUTLOOK_MCP_SIGNATURES_DIR` | Signatures folder, if not `%APPDATA%\Microsoft\Signatures`. |
@@ -366,6 +381,13 @@ npx @modelcontextprotocol/inspector .venv\Scripts\python.exe -m outlook_mcp
 
 > The inspector mangles backslashes on Windows — use forward-slash
 > paths if you hit "ENOENT" errors.
+
+To check everything against your real Outlook (draft-only is forced, and
+the one test draft and test appointment it creates are deleted after):
+
+```bat
+.venv\Scripts\python scripts\smoke_test.py --with colleague@yourcompany.com
+```
 
 Tests mock COM, so they run on any OS (`tests/conftest.py` stubs
 `pywin32` off Windows; a handful of bridge tests need real pywin32 and
@@ -431,7 +453,9 @@ Merged from upstream pull requests that were open at the time:
 
 Added here (mostly from [upstream issue #13](https://github.com/anasahmed07/Outlook-Classic-MCP/issues/13)):
 
-- Reply and forward drafts (`save_only`), `send_draft`, and draft-only mode.
+- Reply and forward drafts (`save_only`), `send_draft`, and draft-only mode
+  (on by default).
+- Other people's calendars, free/busy lookup and a meeting-time finder.
 - Reply/forward text inserted inside the HTML body instead of before `<html>`;
   plain-text replies no longer flatten an HTML thread.
 - To/CC/BCC, subject and importance on replies and forwards.

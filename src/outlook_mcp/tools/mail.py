@@ -339,7 +339,7 @@ def register(mcp, bridge) -> None:
     ) -> str:
         """Send a draft that is already in Drafts, e.g. after the user reviewed it.
 
-        Confirm with the user first. Disabled when OUTLOOK_MCP_DRAFT_ONLY is set.
+        Confirm with the user first. Disabled in draft-only mode (the default; OUTLOOK_MCP_ALLOW_SEND=1 enables sending).
         """
         data = await bridge.call(mail_client.send_draft, entry_id=entry_id)
         return format_response(data, "json")

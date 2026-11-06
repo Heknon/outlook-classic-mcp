@@ -34,3 +34,6 @@ def _isolate_environment(monkeypatch, tmp_path):
     monkeypatch.setenv("OUTLOOK_MCP_SIGNATURES_DIR", str(tmp_path / "no-signatures"))
     for var in ("OUTLOOK_MCP_DRAFT_ONLY", "OUTLOOK_MCP_ALLOWED_PATHS", "OUTLOOK_MCP_ALLOW_ANY_PATH"):
         monkeypatch.delenv(var, raising=False)
+    # Draft-only is the server default; most tests exercise sending, so
+    # enable it here. Tests of the default unset this.
+    monkeypatch.setenv("OUTLOOK_MCP_ALLOW_SEND", "1")

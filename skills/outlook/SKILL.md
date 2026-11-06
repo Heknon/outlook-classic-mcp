@@ -90,7 +90,7 @@ Most read tools accept `response_format='markdown'` (default; pretty for the use
 ### Read tools are free; write tools have side effects
 
 Read freely:
-`list_mails`, `search_mails`, `get_mail`, `list_folders`, `list_events`, `get_event`, `list_contacts`, `search_contacts`, `get_contact`, `resolve_name`, `list_tasks`, `list_categories`, `list_rules`, `get_out_of_office`, `list_signatures`, `whoami`.
+`list_mails`, `search_mails`, `get_mail`, `list_folders`, `list_events`, `get_event`, `list_contacts`, `search_contacts`, `get_contact`, `resolve_name`, `list_tasks`, `list_categories`, `list_rules`, `get_out_of_office`, `list_signatures`, `get_free_busy`, `find_meeting_times`, `whoami`.
 
 Confirm before calling (these change shared state or send messages):
 `send_mail`, `reply_mail`, `forward_mail`, `send_draft`, `delete_mail`, `move_mail`, `mark_mail`, `save_attachments`, `create_event` (especially with attendees — that sends a meeting invite immediately), `update_event`, `delete_event`, `respond_event` (with `send_response=true`), `create_folder`, `create_task`, `complete_task`, `set_category`, `toggle_rule`.
@@ -102,7 +102,14 @@ Staging (draft) options — prefer these whenever the user says "draft" or hasn'
 - `outlook_update_event` changes only the user's calendar unless `send_update=true`.
 - `outlook_respond_event(..., send_response=false)` records your local accept/decline without emailing the organizer.
 
-If the server runs with `OUTLOOK_MCP_DRAFT_ONLY=1`, nothing can be sent: compose tools always save drafts (the result has `status: "saved_to_drafts"` and a note), `send_draft` is refused, and invites/updates/cancellations are not sent. Don't try to work around it — tell the user the draft is waiting in Outlook.
+**By default the server is in draft-only mode**: nothing can be sent. Compose tools always save drafts (the result has `status: "saved_to_drafts"` and a note), `send_draft` is refused, and invites/updates/cancellations are not sent. Don't try to work around it — tell the user the draft is waiting in Outlook. Only if the user has set `OUTLOOK_MCP_ALLOW_SEND=1` can things be sent.
+
+### Other people's calendars and finding a time
+
+- "When is Ann free?" / "Find a time with Ann and Bob": use `outlook_find_meeting_times` (or `outlook_get_free_busy` for raw busy blocks). Both use Exchange free/busy, which works for anyone in the organization without calendar permissions, and include the user's own calendar by default.
+- Ask or infer the working week: for a Sunday–Thursday week pass `working_days=["sun","mon","tue","wed","thu"]`. Default hours are 09:00–17:00 local.
+- Offer the user a few slots, then `outlook_create_event` with the attendees (saved unsent in draft-only mode).
+- "What's on Ann's calendar?" (meeting titles/details): `outlook_list_events(mailbox="ann@...")`. This needs Ann to have shared her calendar; if it fails, fall back to free/busy and say so.
 
 ## Default workflow
 

@@ -114,7 +114,8 @@ If Outlook isn't running, the integration auto-launches it. On tightly locked-do
 
 Set these in the MCP client's config (an `env` object alongside the server's `command` and `args`) when needed:
 
-- `OUTLOOK_MCP_DRAFT_ONLY=1` — **nothing can be sent.** Compose tools always save to Drafts, `outlook_send_draft` is refused, meeting invites/updates/cancellations are saved unsent, and meeting responses are left in Drafts. Recommended for work mailboxes: the user reviews and sends from Outlook.
+- `OUTLOOK_MCP_ALLOW_SEND=1` — allow sending. **Without it, nothing can be sent** (the default): compose tools always save to Drafts, `outlook_send_draft` is refused, meeting invites/updates are saved unsent, cancellations are refused, and meeting responses are left in Drafts.
+- `OUTLOOK_MCP_DRAFT_ONLY=1` — force draft-only even if `OUTLOOK_MCP_ALLOW_SEND` is set.
 - `OUTLOOK_MCP_ALLOWED_PATHS=G:\My Drive\Work;D:\Shared` — extra folders (separated by `;`) that `attachments=` and `output_dir=` may use besides the user profile.
 - `OUTLOOK_MCP_ALLOW_ANY_PATH=1` — disables the path sandbox entirely. Prefer `OUTLOOK_MCP_ALLOWED_PATHS`.
 - `OUTLOOK_MCP_SIGNATURES_DIR=...` — where Outlook signatures live, if not the standard `%APPDATA%\Microsoft\Signatures`.
