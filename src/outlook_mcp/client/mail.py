@@ -4,25 +4,46 @@ from __future__ import annotations
 
 import ntpath
 import os
-import re
-from html import escape as _html_escape
 from typing import Any
 
 from outlook_mcp.client.folders import _safe_get, get_item_by_id, resolve_folder
 from outlook_mcp.constants import (
     IMPORTANCE_MAP,
+    OL_BCC,
+    OL_BY_VALUE,
+    OL_CC,
     OL_CLASS_MAIL,
     OL_CLASS_MEETING_REQUEST,
+    OL_FOLDER_DRAFTS,
     OL_FORMAT_HTML,
     OL_FORMAT_PLAIN,
-    OL_IMPORTANCE_NORMAL,
-    OL_FOLDER_DRAFTS,
     OL_MAIL_ITEM,
+    OL_TO,
+    PR_ATTACH_CONTENT_ID,
+    PR_ATTACHMENT_HIDDEN,
 )
 from outlook_mcp.errors import OutlookError
 from outlook_mcp.utils.formatting import from_iso, to_dasl_date, to_iso, truncate
+from outlook_mcp.utils.html_compose import (
+    EMPTY_PARAGRAPH,
+    append_to_body,
+    body_insert_position,
+    compose_fragment,
+    has_auto_signature,
+    insert_at_top,
+    new_html_document,
+    text_to_html,
+)
 from outlook_mcp.utils.paths import validate_attachment_path, validate_output_dir
+from outlook_mcp.utils.policy import DRAFT_ONLY_NOTE, draft_only
 from outlook_mcp.utils.safety import safe_dasl
+from outlook_mcp.utils.signatures import (
+    Signature,
+    default_signature_name,
+    list_signatures,
+    load_signature,
+    signatures_dir,
+)
 
 WINDOWS_RESERVED_DEVICE_NAMES = {"CON", "PRN", "AUX", "NUL", "CLOCK$"} | {
     f"COM{i}" for i in range(1, 10)
@@ -323,6 +344,236 @@ def find_account(outlook: Any, account: str) -> Any:
     )
 
 
+# --------------------------------------------------------------------------
+# Composition helpers shared by send / reply / forward
+# --------------------------------------------------------------------------
+
+
+def _default_account(namespace: Any) -> Any:
+    """The account that owns the default store, else the first account."""
+    try:
+        accounts = namespace.Accounts
+        default_store_id = _safe_get(_safe_get(namespace, "DefaultStore"), "StoreID")
+        first = None
+        for i in range(1, accounts.Count + 1):
+            acc = accounts.Item(i)
+            if first is None:
+                first = acc
+            store = _safe_get(acc, "DeliveryStore")
+            if default_store_id and _safe_get(store, "StoreID") == default_store_id:
+                return acc
+        return first
+    except Exception:
+        return None
+
+
+def _account_identifiers(acc: Any) -> list[str]:
+    if acc is None:
+        return []
+    return [
+        str(v)
+        for v in (_safe_get(acc, "DisplayName"), _safe_get(acc, "SmtpAddress"))
+        if v
+    ]
+
+
+def _wants_default_signature(signature: Any) -> bool:
+    return signature is True or (
+        isinstance(signature, str) and signature.strip().lower() in ("default", "true")
+    )
+
+
+def _resolve_signature(
+    namespace: Any, signature: Any, kind: str, account: Any
+) -> Signature | None:
+    """Load the requested signature, or None if none applies.
+
+    ``signature`` is falsy (no signature), True / "default" (the account's
+    default for ``kind`` — 'new' or 'reply'), or a signature name.
+    """
+    if not signature:
+        return None
+    if _wants_default_signature(signature):
+        name = default_signature_name(
+            kind,
+            _safe_get(namespace, "CurrentProfileName"),
+            _account_identifiers(account),
+        )
+        return load_signature(name) if name else None
+    return load_signature(str(signature))
+
+
+def _attach_inline_images(item: Any, sig: Signature | None) -> None:
+    """Attach signature images as hidden inline attachments (cid:)."""
+    if sig is None:
+        return
+    for path, cid in sig.images:
+        att = item.Attachments.Add(path, OL_BY_VALUE)
+        pa = att.PropertyAccessor
+        pa.SetProperty(PR_ATTACH_CONTENT_ID, cid)
+        try:
+            pa.SetProperty(PR_ATTACHMENT_HIDDEN, True)
+        except Exception:  # not fatal: the image just also shows as a file
+            pass
+
+
+def _add_recipients(item: Any, addresses: list[str] | None, kind: int) -> None:
+    for addr in addresses or []:
+        if addr and addr.strip():
+            rec = item.Recipients.Add(addr.strip())
+            rec.Type = kind
+
+
+def _apply_importance(item: Any, importance: str | None) -> None:
+    if importance:
+        code = IMPORTANCE_MAP.get(importance.lower())
+        if code is None:
+            raise OutlookError("importance must be one of: 'low', 'normal', 'high'.")
+        item.Importance = code
+
+
+def _write_reply_body(
+    item: Any, body: str, html: bool, sig: Signature | None
+) -> None:
+    """Put new text (and signature) above the quoted history of a reply/forward.
+
+    For HTML items the text goes inside the existing ``<body>`` /
+    ``WordSection1`` so it picks up the message's own styles; the quoted
+    history and its formatting are left untouched. Rich Text items are
+    converted to HTML first. Plain-text items get plain-text treatment
+    unless the caller asked for HTML or a signature.
+    """
+    if not body and sig is None:
+        return
+    body_format = _safe_get(item, "BodyFormat")
+    if body_format == OL_FORMAT_PLAIN and not html and sig is None:
+        item.Body = body + "\n\n" + (_safe_get(item, "Body", "") or "")
+        return
+    # HTML, or Rich Text (common for internal Exchange mail): assigning .Body
+    # would throw away the formatting of the quoted thread, so work in HTML.
+    if body_format != OL_FORMAT_HTML:
+        item.BodyFormat = OL_FORMAT_HTML  # Outlook converts the existing body
+    fragment = compose_fragment(
+        body,
+        is_html=html,
+        signature_html=sig.html if sig else None,
+        trailing_gap=True,
+    )
+    item.HTMLBody = insert_at_top(_safe_get(item, "HTMLBody", "") or "", fragment)
+
+
+def _write_new_body(item: Any, body: str, html: bool, sig: Signature | None) -> None:
+    if sig is None:
+        if html:
+            item.BodyFormat = OL_FORMAT_HTML
+            item.HTMLBody = body
+        else:
+            item.BodyFormat = OL_FORMAT_PLAIN
+            item.Body = body
+        return
+    item.BodyFormat = OL_FORMAT_HTML
+    if html and body_insert_position(body) is not None:
+        # Caller supplied a full HTML document: keep its <head>/styles and
+        # put the signature at the end of its body.
+        item.HTMLBody = append_to_body(body, EMPTY_PARAGRAPH + sig.html)
+        return
+    fragment = compose_fragment(body, is_html=html, signature_html=sig.html)
+    item.HTMLBody = new_html_document(fragment)
+
+
+def _insert_default_signature_via_inspector(
+    namespace: Any, mail: Any, body: str, html: bool
+) -> Any:
+    """Fallback when no default signature is found in the registry.
+
+    Outlook inserts the account's default signature when an inspector is
+    created for a new item. The hidden inspector must be closed and the
+    item reloaded before it can be sent (Send() fails with E_INVALIDARG
+    otherwise). Returns the (possibly reloaded) item.
+    """
+    mail.BodyFormat = OL_FORMAT_HTML
+    inspector = mail.GetInspector
+    existing = mail.HTMLBody or ""
+    new_html = body if html else text_to_html(body)
+    pos = body_insert_position(existing)
+    if pos is not None:
+        mail.HTMLBody = existing[:pos] + new_html + EMPTY_PARAGRAPH + existing[pos:]
+    else:
+        mail.HTMLBody = new_html + EMPTY_PARAGRAPH + existing
+    mail.Save()
+    entry_id, store_id = mail.EntryID, mail.Parent.StoreID
+    inspector.Close(OL_INSPECTOR_SAVE)
+    return get_item_by_id(namespace, entry_id, store_id)
+
+
+def _unresolved(item: Any) -> list[str]:
+    """Resolve all recipients; return the names that could not be resolved."""
+    try:
+        if item.Recipients.ResolveAll():
+            return []
+    except Exception:
+        pass
+    names = []
+    for r in item.Recipients:
+        if not _safe_get(r, "Resolved", True):
+            names.append(str(_safe_get(r, "Name", "") or _safe_get(r, "Address", "")))
+    return names
+
+
+def _save_or_send(
+    item: Any,
+    *,
+    save_only: bool,
+    result: dict[str, Any],
+    notes: list[str],
+) -> dict[str, Any]:
+    """Shared tail of every compose tool: resolve, then save or send.
+
+    Recipients are resolved before saving too: a draft saved with
+    unresolved recipients has no address on them, and new Outlook / OWA
+    then fail to send it after an edit.
+    """
+    unresolved = _unresolved(item)
+    forced = draft_only() and not save_only
+    if save_only or forced:
+        item.Save()
+        if forced:
+            notes.append(DRAFT_ONLY_NOTE)
+        if unresolved:
+            notes.append(
+                "Some recipients could not be resolved and need fixing before "
+                f"sending: {', '.join(unresolved)}"
+            )
+        out = {
+            "status": "saved_to_drafts",
+            "entry_id": _safe_get(item, "EntryID"),
+            "subject": _safe_get(item, "Subject", ""),
+            **result,
+        }
+    else:
+        if unresolved:
+            raise OutlookError(
+                "Not sent: these recipients could not be resolved: "
+                f"{', '.join(unresolved)}. Fix the addresses (outlook_resolve_name "
+                "can help) or save as a draft with save_only=true."
+            )
+        # Cache properties BEFORE Send(): once sent, the COM object has moved
+        # to Sent Items and reading it raises "item has been moved or
+        # deleted" — surfacing that as a failure makes agents retry and send
+        # duplicates even though Send() succeeded.
+        subject = _safe_get(item, "Subject", "")
+        item.Send()
+        out = {"status": "sent", "subject": subject, **result}
+    if notes:
+        out["notes"] = notes
+    return out
+
+
+# --------------------------------------------------------------------------
+# Compose tools
+# --------------------------------------------------------------------------
+
+
 def send_mail(
     outlook: Any,
     namespace: Any,
@@ -337,8 +588,13 @@ def send_mail(
     importance: str = "normal",
     save_only: bool = False,
     account: str | None = None,
-    signature: bool = False,
+    signature: Any = None,
 ) -> dict[str, Any]:
+    # Validate paths before creating anything, so a bad path can't leave a
+    # half-built item behind.
+    attachment_paths = [validate_attachment_path(p) for p in attachments or []]
+
+    acc = None
     if account:
         acc = find_account(outlook, account)
         # Create the item inside the account's own Drafts folder so that a
@@ -348,74 +604,92 @@ def send_mail(
         mail.SendUsingAccount = acc
     else:
         mail = outlook.CreateItem(OL_MAIL_ITEM)
+
     mail.To = "; ".join(to)
     if cc:
         mail.CC = "; ".join(cc)
     if bcc:
         mail.BCC = "; ".join(bcc)
     mail.Subject = subject
-    inspector = None
-    if signature:
-        # Outlook only inserts the default signature once the item's inspector
-        # has been created. Keep a reference: the hidden inspector has to be
-        # closed again before the item can be sent (see below).
-        mail.BodyFormat = OL_FORMAT_HTML
-        inspector = mail.GetInspector
-        existing = mail.HTMLBody or ""
-        if html:
-            new_html = body
-        else:
-            new_html = "<br>".join(_html_escape(line) for line in body.splitlines())
-        match = re.search(r"<body[^>]*>", existing, re.IGNORECASE)
-        if match:
-            mail.HTMLBody = (
-                existing[: match.end()] + new_html + "<br><br>" + existing[match.end() :]
-            )
-        else:
-            mail.HTMLBody = new_html + "<br><br>" + existing
-    elif html:
-        mail.BodyFormat = OL_FORMAT_HTML
-        mail.HTMLBody = body
+    _apply_importance(mail, importance)
+
+    notes: list[str] = []
+    sig = _resolve_signature(namespace, signature, "new", acc or _default_account(namespace))
+    if signature and sig is None:
+        # "default" requested but no default is configured in the registry:
+        # let Outlook insert it the way it does for a new message window.
+        mail = _insert_default_signature_via_inspector(namespace, mail, body, html)
     else:
-        mail.BodyFormat = OL_FORMAT_PLAIN
-        mail.Body = body
-    mail.Importance = IMPORTANCE_MAP.get(importance.lower(), OL_IMPORTANCE_NORMAL)
+        _attach_inline_images(mail, sig)
+        _write_new_body(mail, body, html, sig)
 
-    for raw_path in attachments or []:
-        mail.Attachments.Add(validate_attachment_path(raw_path))
+    for path in attachment_paths:
+        mail.Attachments.Add(path)
 
-    # Resolve before saving: a draft saved with unresolved recipients has no
-    # address on them. Classic Outlook resolves again at send time, but new
-    # Outlook / OWA rewrites them as name-only on first edit and the send
-    # then fails with "This message wasn't sent" (verified live).
-    mail.Recipients.ResolveAll()
+    result: dict[str, Any] = {"to": to, "cc": cc or [], "bcc": bcc or []}
+    if sig is not None:
+        result["signature"] = sig.name
+    return _save_or_send(mail, save_only=save_only, result=result, notes=notes)
 
-    if inspector is not None:
-        # Calling Send() while a never-displayed inspector is still attached
-        # fails with E_INVALIDARG (0x80070057, "parameter is incorrect").
-        # Save, close the inspector, then reload the item fresh from its store.
-        mail.Save()
-        entry_id, store_id = mail.EntryID, mail.Parent.StoreID
-        inspector.Close(OL_INSPECTOR_SAVE)
-        inspector = None
-        mail = get_item_by_id(namespace, entry_id, store_id)
 
-    if save_only:
-        mail.Save()
-        return {
-            "status": "saved_to_drafts",
-            "entry_id": mail.EntryID,
-            "subject": mail.Subject,
-        }
+def _reply_like(
+    namespace: Any,
+    item: Any,
+    *,
+    kind_label: str,
+    source_entry_id: str,
+    body: str,
+    html: bool,
+    to: list[str] | None,
+    cc: list[str] | None,
+    bcc: list[str] | None,
+    subject: str | None,
+    importance: str | None,
+    attachments: list[str] | None,
+    signature: Any,
+    save_only: bool,
+    extra: dict[str, Any],
+) -> dict[str, Any]:
+    attachment_paths = [validate_attachment_path(p) for p in attachments or []]
+    notes: list[str] = []
 
-    mail.Send()
-    return {
-        "status": "sent",
-        "to": to,
-        "cc": cc or [],
-        "bcc": bcc or [],
-        "subject": subject,
-    }
+    _add_recipients(item, to, OL_TO)
+    _add_recipients(item, cc, OL_CC)
+    _add_recipients(item, bcc, OL_BCC)
+    if subject:
+        item.Subject = subject
+    _apply_importance(item, importance)
+
+    sig = None
+    if signature:
+        if _wants_default_signature(signature) and has_auto_signature(
+            _safe_get(item, "HTMLBody", "")
+        ):
+            notes.append("Outlook already added your signature; not added twice.")
+        else:
+            account = _safe_get(item, "SendUsingAccount") or _default_account(namespace)
+            sig = _resolve_signature(namespace, signature, "reply", account)
+            if sig is None:
+                notes.append(
+                    "No default reply/forward signature is configured in Outlook; "
+                    "pass a signature name (see outlook_list_signatures)."
+                )
+    _attach_inline_images(item, sig)
+    _write_reply_body(item, body, html, sig)
+
+    for path in attachment_paths:
+        item.Attachments.Add(path)
+
+    result = {kind_label: source_entry_id, **extra}
+    if sig is not None:
+        result["signature"] = sig.name
+    if not _safe_get(_safe_get(item, "Recipients"), "Count", 0):
+        if not (save_only or draft_only()):
+            raise OutlookError(
+                "This message has no recipients. Pass `to`, or save it as a draft "
+                "with save_only=true and add recipients in Outlook."
+            )
+    return _save_or_send(item, save_only=save_only, result=result, notes=notes)
 
 
 def reply_mail(
@@ -427,29 +701,33 @@ def reply_mail(
     reply_all: bool = False,
     html: bool = False,
     attachments: list[str] | None = None,
+    to: list[str] | None = None,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    subject: str | None = None,
+    importance: str | None = None,
+    signature: Any = None,
+    save_only: bool = False,
 ) -> dict[str, Any]:
     original = get_item_by_id(namespace, entry_id)
     reply = original.ReplyAll() if reply_all else original.Reply()
-    if html:
-        reply.BodyFormat = OL_FORMAT_HTML
-        reply.HTMLBody = body + (reply.HTMLBody or "")
-    else:
-        reply.Body = body + "\n\n" + (reply.Body or "")
-    for raw_path in attachments or []:
-        reply.Attachments.Add(validate_attachment_path(raw_path))
-    # Cache properties BEFORE Send(): once the reply is sent, the underlying
-    # COM object has effectively moved from Drafts to Sent Items and reading
-    # any of its properties raises a "item has been moved or deleted" COM
-    # error. Surfacing that as a failure causes upstream AI agents to retry
-    # and send duplicates, even though the original Send() succeeded.
-    reply_subject = reply.Subject
-    reply.Send()
-    return {
-        "status": "sent",
-        "reply_all": reply_all,
-        "in_reply_to": entry_id,
-        "subject": reply_subject,
-    }
+    return _reply_like(
+        namespace,
+        reply,
+        kind_label="in_reply_to",
+        source_entry_id=entry_id,
+        body=body,
+        html=html,
+        to=to,
+        cc=cc,
+        bcc=bcc,
+        subject=subject,
+        importance=importance,
+        attachments=attachments,
+        signature=signature,
+        save_only=save_only,
+        extra={"reply_all": reply_all},
+    )
 
 
 def forward_mail(
@@ -457,30 +735,79 @@ def forward_mail(
     namespace: Any,
     *,
     entry_id: str,
-    to: list[str],
+    to: list[str] | None = None,
     body: str = "",
     cc: list[str] | None = None,
+    bcc: list[str] | None = None,
     html: bool = False,
+    attachments: list[str] | None = None,
+    subject: str | None = None,
+    importance: str | None = None,
+    signature: Any = None,
+    save_only: bool = False,
 ) -> dict[str, Any]:
     original = get_item_by_id(namespace, entry_id)
     fwd = original.Forward()
-    fwd.To = "; ".join(to)
-    if cc:
-        fwd.CC = "; ".join(cc)
-    if body:
-        if html:
-            fwd.BodyFormat = OL_FORMAT_HTML
-            fwd.HTMLBody = body + (fwd.HTMLBody or "")
-        else:
-            fwd.Body = body + "\n\n" + (fwd.Body or "")
-    # Cache properties BEFORE Send(): once the forward is sent, the underlying
-    # COM object has effectively moved from Drafts to Sent Items and reading
-    # any of its properties raises a "item has been moved or deleted" COM
-    # error. Surfacing that as a failure causes upstream AI agents to retry
-    # and send duplicates, even though the original Send() succeeded.
-    fwd_subject = fwd.Subject
-    fwd.Send()
-    return {"status": "sent", "forwarded": entry_id, "to": to, "subject": fwd_subject}
+    return _reply_like(
+        namespace,
+        fwd,
+        kind_label="forwarded",
+        source_entry_id=entry_id,
+        body=body,
+        html=html,
+        to=to,
+        cc=cc,
+        bcc=bcc,
+        subject=subject,
+        importance=importance,
+        attachments=attachments,
+        signature=signature,
+        save_only=save_only,
+        extra={"to": to or []},
+    )
+
+
+def send_draft(outlook: Any, namespace: Any, *, entry_id: str) -> dict[str, Any]:
+    """Send a mail that is already saved as a draft (e.g. after review)."""
+    if draft_only():
+        raise OutlookError(
+            "Sending is disabled: draft-only mode is on (OUTLOOK_MCP_DRAFT_ONLY). "
+            "Send the draft from Outlook."
+        )
+    item = get_item_by_id(namespace, entry_id)
+    if _safe_get(item, "Class") != OL_CLASS_MAIL:
+        raise OutlookError("That item is not a mail message.")
+    if _safe_get(item, "Sent", False):
+        raise OutlookError("That message has already been sent; it is not a draft.")
+    if not _safe_get(_safe_get(item, "Recipients"), "Count", 0):
+        raise OutlookError("The draft has no recipients. Add them in Outlook first.")
+    unresolved = _unresolved(item)
+    if unresolved:
+        raise OutlookError(
+            "Not sent: these recipients could not be resolved: "
+            f"{', '.join(unresolved)}. Fix them in Outlook first."
+        )
+    result = {
+        "status": "sent",
+        "subject": _safe_get(item, "Subject", ""),
+        "to": _safe_get(item, "To", ""),
+        "cc": _safe_get(item, "CC", ""),
+        "bcc": _safe_get(item, "BCC", ""),
+    }
+    item.Send()
+    return result
+
+
+def list_signatures_info(outlook: Any, namespace: Any) -> dict[str, Any]:
+    acc = _default_account(namespace)
+    profile = _safe_get(namespace, "CurrentProfileName")
+    ids = _account_identifiers(acc)
+    return {
+        "folder": str(signatures_dir()),
+        "signatures": list_signatures(),
+        "default_new": default_signature_name("new", profile, ids),
+        "default_reply_forward": default_signature_name("reply", profile, ids),
+    }
 
 
 def move_mail(outlook: Any, namespace: Any, *, entry_id: str, target_folder: str) -> dict[str, Any]:

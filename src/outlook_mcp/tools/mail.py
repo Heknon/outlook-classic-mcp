@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Optional
+from typing import Annotated, Optional, Union
 
 from mcp.types import CallToolResult
 from pydantic import Field
@@ -11,6 +11,21 @@ from outlook_mcp.client import mail as mail_client
 from outlook_mcp.ui import ui_meta, ui_result
 from outlook_mcp.utils.formatting import format_response
 from outlook_mcp.utils.safety import safe_call
+
+
+SAVE_ONLY_DESC = (
+    "If true, save to Drafts instead of sending and return the draft's "
+    "entry_id. Use this whenever the user asked for a draft or hasn't "
+    "explicitly approved sending."
+)
+
+SIGNATURE_DESC = (
+    "Signature to add below your text: true or 'default' for the account's "
+    "default Outlook signature (the reply/forward default for replies), or "
+    "a signature name from outlook_list_signatures. Omit for none."
+)
+
+SignatureArg = Optional[Union[bool, str]]
 
 
 def register(mcp, bridge) -> None:
@@ -161,7 +176,7 @@ def register(mcp, bridge) -> None:
     @mcp.tool(
         name="outlook_send_mail",
         annotations={
-            "title": "Send Outlook mail",
+            "title": "Send Outlook mail (or save as draft)",
             "readOnlyHint": False,
             "destructiveHint": False,
             "idempotentHint": False,
@@ -178,7 +193,7 @@ def register(mcp, bridge) -> None:
         html: Annotated[bool, Field(description="Treat body as HTML.")] = False,
         attachments: Annotated[Optional[list[str]], Field(description="Absolute paths to local files.")] = None,
         importance: Annotated[str, Field(description="One of: 'low', 'normal', 'high'.")] = "normal",
-        save_only: Annotated[bool, Field(description="If true, save to Drafts instead of sending.")] = False,
+        save_only: Annotated[bool, Field(description=SAVE_ONLY_DESC)] = False,
         account: Annotated[
             Optional[str],
             Field(
@@ -190,18 +205,9 @@ def register(mcp, bridge) -> None:
                 )
             ),
         ] = None,
-        signature: Annotated[
-            bool,
-            Field(
-                description=(
-                    "If true, append the sender account's default Outlook signature "
-                    "(HTML) below the body. Requires a default signature for new "
-                    "messages to be set for that account in Outlook."
-                )
-            ),
-        ] = False,
+        signature: Annotated[SignatureArg, Field(description=SIGNATURE_DESC)] = None,
     ) -> str:
-        """Compose and send a new mail. Set save_only=True to save to Drafts."""
+        """Compose a new mail and send it, or save it to Drafts with save_only=True."""
         data = await bridge.call(
             mail_client.send_mail,
             to=to,
@@ -221,7 +227,7 @@ def register(mcp, bridge) -> None:
     @mcp.tool(
         name="outlook_reply_mail",
         annotations={
-            "title": "Reply to Outlook mail",
+            "title": "Reply to Outlook mail (or save reply as draft)",
             "readOnlyHint": False,
             "destructiveHint": False,
             "idempotentHint": False,
@@ -231,12 +237,31 @@ def register(mcp, bridge) -> None:
     @safe_call
     async def outlook_reply_mail(
         entry_id: Annotated[str, Field(description="EntryID of the mail to reply to.")],
-        body: Annotated[str, Field(description="Reply body. Quoted original is appended.")],
+        body: Annotated[
+            str,
+            Field(
+                description=(
+                    "Your reply text. It is placed above the quoted original, "
+                    "which Outlook keeps intact. Plain text unless html=True."
+                )
+            ),
+        ],
         reply_all: Annotated[bool, Field(description="Reply to all recipients.")] = False,
-        html: Annotated[bool, Field(description="Treat body as HTML.")] = False,
-        attachments: Annotated[Optional[list[str]], Field(description="Files to attach.")] = None,
+        html: Annotated[bool, Field(description="Treat body as an HTML fragment.")] = False,
+        attachments: Annotated[Optional[list[str]], Field(description="Absolute paths of files to attach.")] = None,
+        to: Annotated[Optional[list[str]], Field(description="Extra To recipients, added to the reply's own.")] = None,
+        cc: Annotated[Optional[list[str]], Field(description="Extra CC recipients.")] = None,
+        bcc: Annotated[Optional[list[str]], Field(description="BCC recipients.")] = None,
+        subject: Annotated[Optional[str], Field(description="Replace the subject (default keeps 'RE: ...').")] = None,
+        importance: Annotated[Optional[str], Field(description="One of: 'low', 'normal', 'high'.")] = None,
+        signature: Annotated[SignatureArg, Field(description=SIGNATURE_DESC)] = None,
+        save_only: Annotated[bool, Field(description=SAVE_ONLY_DESC)] = False,
     ) -> str:
-        """Reply (or reply-all) to an existing mail."""
+        """Reply (or reply-all) to a mail, keeping the thread and quoted history.
+
+        With save_only=True the reply is saved to Drafts (still threaded) and
+        its entry_id returned, so the user can review it before sending.
+        """
         data = await bridge.call(
             mail_client.reply_mail,
             entry_id=entry_id,
@@ -244,13 +269,20 @@ def register(mcp, bridge) -> None:
             reply_all=reply_all,
             html=html,
             attachments=attachments,
+            to=to,
+            cc=cc,
+            bcc=bcc,
+            subject=subject,
+            importance=importance,
+            signature=signature,
+            save_only=save_only,
         )
         return format_response(data, "json")
 
     @mcp.tool(
         name="outlook_forward_mail",
         annotations={
-            "title": "Forward Outlook mail",
+            "title": "Forward Outlook mail (or save forward as draft)",
             "readOnlyHint": False,
             "destructiveHint": False,
             "idempotentHint": False,
@@ -260,20 +292,72 @@ def register(mcp, bridge) -> None:
     @safe_call
     async def outlook_forward_mail(
         entry_id: Annotated[str, Field(description="EntryID of the mail to forward.")],
-        to: Annotated[list[str], Field(min_length=1, description="Forward recipients.")],
+        to: Annotated[
+            Optional[list[str]],
+            Field(description="Forward recipients. Required unless save_only=True."),
+        ] = None,
         body: Annotated[str, Field(description="Optional note above the forwarded mail.")] = "",
         cc: Annotated[Optional[list[str]], Field(description="CC recipients.")] = None,
-        html: Annotated[bool, Field(description="Treat body as HTML.")] = False,
+        bcc: Annotated[Optional[list[str]], Field(description="BCC recipients.")] = None,
+        html: Annotated[bool, Field(description="Treat body as an HTML fragment.")] = False,
+        attachments: Annotated[Optional[list[str]], Field(description="Absolute paths of extra files to attach.")] = None,
+        subject: Annotated[Optional[str], Field(description="Replace the subject (default keeps 'FW: ...').")] = None,
+        importance: Annotated[Optional[str], Field(description="One of: 'low', 'normal', 'high'.")] = None,
+        signature: Annotated[SignatureArg, Field(description=SIGNATURE_DESC)] = None,
+        save_only: Annotated[bool, Field(description=SAVE_ONLY_DESC)] = False,
     ) -> str:
-        """Forward an existing mail with an optional added note."""
+        """Forward a mail (with its attachments) and an optional note, or save it as a draft."""
         data = await bridge.call(
             mail_client.forward_mail,
             entry_id=entry_id,
             to=to,
             body=body,
             cc=cc,
+            bcc=bcc,
             html=html,
+            attachments=attachments,
+            subject=subject,
+            importance=importance,
+            signature=signature,
+            save_only=save_only,
         )
+        return format_response(data, "json")
+
+    @mcp.tool(
+        name="outlook_send_draft",
+        annotations={
+            "title": "Send an existing Outlook draft",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": True,
+        },
+    )
+    @safe_call
+    async def outlook_send_draft(
+        entry_id: Annotated[str, Field(description="EntryID of the draft (from a save_only result or the Drafts folder).")],
+    ) -> str:
+        """Send a draft that is already in Drafts, e.g. after the user reviewed it.
+
+        Confirm with the user first. Disabled when OUTLOOK_MCP_DRAFT_ONLY is set.
+        """
+        data = await bridge.call(mail_client.send_draft, entry_id=entry_id)
+        return format_response(data, "json")
+
+    @mcp.tool(
+        name="outlook_list_signatures",
+        annotations={
+            "title": "List Outlook signatures",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    )
+    @safe_call
+    async def outlook_list_signatures() -> str:
+        """List saved Outlook signatures and the defaults for new mail and replies."""
+        data = await bridge.call(mail_client.list_signatures_info)
         return format_response(data, "json")
 
     @mcp.tool(

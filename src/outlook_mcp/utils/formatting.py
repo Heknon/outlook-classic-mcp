@@ -98,8 +98,19 @@ def to_dasl_date(value: dt.datetime) -> str:
     the wrong dates without any error. DASL property queries against
     "urn:schemas:..." accept unambiguous ISO-ordered dates instead, so
     filtering by those property URNs sidesteps the locale dependency.
+
+    DASL compares date-times in UTC (unlike Jet, which uses local time),
+    so the naive local wall-clock value is converted to UTC first.
+    Without this, every DASL date bound is off by the machine's UTC
+    offset — e.g. on UTC+2 a "since midnight" filter would drop the
+    first two hours of the day.
     """
-    return value.strftime("%Y-%m-%d %H:%M")
+    if value.tzinfo is None:
+        try:
+            value = value.astimezone()  # attach the local offset (DST-aware)
+        except (OSError, OverflowError, ValueError):
+            return value.strftime("%Y-%m-%d %H:%M")
+    return value.astimezone(dt.timezone.utc).strftime("%Y-%m-%d %H:%M")
 
 
 def format_response(data: Any, fmt: ResponseFormat | str) -> str:

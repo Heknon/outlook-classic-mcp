@@ -59,6 +59,10 @@ IMPORTANCE_MAP: dict[str, int] = {
     "high": OL_IMPORTANCE_HIGH,
 }
 
+# OlMeetingRecipientType (appointments)
+OL_REQUIRED = 1
+OL_OPTIONAL = 2
+
 # OlMailRecipientType
 OL_TO = 1
 OL_CC = 2
@@ -84,3 +88,22 @@ OL_MEETING = 1
 
 # Out-of-office MAPI property tag (PR_OOF_STATE)
 OOF_PROPTAG = "http://schemas.microsoft.com/mapi/proptag/0x661D000B"
+
+# OlMeetingStatus (continued)
+OL_MEETING_CANCELED = 5
+
+# OlResponseStatus — AppointmentItem.ResponseStatus
+OL_RESPONSE_ORGANIZED = 1
+
+# OlRecurrenceState — AppointmentItem.RecurrenceState
+OL_APPT_NOT_RECURRING = 0
+OL_APPT_MASTER = 1
+OL_APPT_OCCURRENCE = 2
+OL_APPT_EXCEPTION = 3
+
+# OlAttachmentType
+OL_BY_VALUE = 1
+
+# MAPI properties used for inline (signature) images
+PR_ATTACH_CONTENT_ID = "http://schemas.microsoft.com/mapi/proptag/0x3712001F"
+PR_ATTACHMENT_HIDDEN = "http://schemas.microsoft.com/mapi/proptag/0x7FFE000B"
