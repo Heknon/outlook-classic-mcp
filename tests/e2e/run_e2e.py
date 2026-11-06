@@ -68,8 +68,25 @@ def server_offset(day: dt.date) -> str:
     return _OFFSET_CACHE[key]
 
 
+_TODAY: list[dt.date] = []
+
+
+def server_today() -> dt.date:
+    """Today's date in the server's timezone (it differs from this
+    process's date around midnight when TZ is set for the server only)."""
+    if not _TODAY:
+        import subprocess
+
+        out = subprocess.run(
+            [sys.executable, "-c", "import datetime as d; print(d.date.today().isoformat())"],
+            env=server_params().env, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        _TODAY.append(dt.date.fromisoformat(out))
+    return _TODAY[0]
+
+
 def off(day_offset: int = 0) -> str:
-    return server_offset(dt.date.today() + dt.timedelta(days=day_offset))
+    return server_offset(server_today() + dt.timedelta(days=day_offset))
 
 
 class Run:
@@ -110,7 +127,7 @@ JSON_FORMAT = {
 
 
 def local(day_offset: int, hhmm: str) -> str:
-    d = dt.date.today() + dt.timedelta(days=day_offset)
+    d = server_today() + dt.timedelta(days=day_offset)
     return f"{d.isoformat()}T{hhmm}:00"
 
 
@@ -264,7 +281,7 @@ async def scenario_draft_only(r: Run):
         return ev["start"]
 
     async def t_all_day():
-        out = await r.call("outlook_create_event", subject="Holiday", start=(dt.date.today() + dt.timedelta(days=3)).isoformat(), all_day=True)
+        out = await r.call("outlook_create_event", subject="Holiday", start=(server_today() + dt.timedelta(days=3)).isoformat(), all_day=True)
         ev = await r.call("outlook_get_event", entry_id=out["entry_id"])
         assert ev["all_day"] and ev["start"].startswith(local(3, "00:00")) and ev["end"].startswith(local(4, "00:00")), ev
         return "midnight to midnight"
@@ -625,6 +642,7 @@ async def scenario_send_enabled(r: Run):
 
 
 async def run_all() -> list[tuple[str, str, str]]:
+    _TODAY.clear()  # recompute per run
     results = []
     for label, env, scenario in [
         ("default (draft-only)", {}, scenario_draft_only),
