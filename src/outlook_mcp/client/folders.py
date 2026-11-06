@@ -121,3 +121,133 @@ def create_folder(outlook: Any, namespace: Any, *, parent: str | None, name: str
         "path": f"{parent_folder.Name}/{new_folder.Name}",
         "entry_id": new_folder.EntryID,
     }
+
+
+# --------------------------------------------------------------------------
+# Mailboxes (stores) and multi-folder search scopes
+# --------------------------------------------------------------------------
+
+# OlExchangeStoreType
+_STORE_TYPES = {
+    0: "primary",  # olPrimaryExchangeMailbox
+    1: "delegate",  # olExchangeMailbox (opened as delegate)
+    2: "public_folders",  # olExchangePublicFolder
+    3: "pst_or_other",  # olNotExchange (PST, IMAP, ...)
+    4: "shared",  # olAdditionalExchangeMailbox
+}
+
+# Matched against the store's display name ("Online Archive - you@corp.com",
+# "In-Place Archive - ...", "Online-Archiv - ..." in German, "ארכיון מקוון -"
+# in Hebrew, "Archivo en línea -" in Spanish ...).
+_ARCHIVE_MARKERS = ("archive", "archiv", "ארכיון")
+
+# Folders a mail search should not descend into.
+_SKIP_FOLDER_NAMES = {
+    "sync issues", "conflicts", "local failures", "server failures",
+    "conversation history", "rss feeds", "rss subscriptions", "outbox",
+    "conversation action settings", "quick step settings", "yammer root",
+    "files", "recoverable items",
+}
+_SKIP_WHEN_EXCLUDING_DELETED = {"deleted items", "junk email", "junk e-mail", "trash", "junk"}
+
+MAIL_ITEM_TYPE = 0  # Folder.DefaultItemType for mail folders
+
+
+def store_kind(store: Any) -> str:
+    name = str(_safe_get(store, "DisplayName", "") or "").lower()
+    if any(m in name for m in _ARCHIVE_MARKERS):
+        return "archive"
+    if _safe_get(store, "IsArchive", False):  # not in every build; cheap to try
+        return "archive"
+    return _STORE_TYPES.get(_safe_get(store, "ExchangeStoreType", 3), "pst_or_other")
+
+
+def list_stores(namespace: Any) -> list[dict[str, Any]]:
+    default_id = _safe_get(_safe_get(namespace, "DefaultStore"), "StoreID")
+    out = []
+    for store in namespace.Stores:
+        out.append(
+            {
+                "name": str(_safe_get(store, "DisplayName", "")),
+                "kind": store_kind(store),
+                "is_default": bool(default_id and _safe_get(store, "StoreID") == default_id),
+            }
+        )
+    return out
+
+
+def list_mailboxes(outlook: Any, namespace: Any) -> dict[str, Any]:
+    stores = list_stores(namespace)
+    return {
+        "count": len(stores),
+        "mailboxes": stores,
+        "note": (
+            "Pass search_in='all' (every mailbox), 'archive', or 'mailbox' "
+            "(your own), or name specific ones with mailboxes=[...]."
+        ),
+    }
+
+
+def select_stores(namespace: Any, search_in: str, mailboxes: list[str] | None) -> list[Any]:
+    default_id = _safe_get(_safe_get(namespace, "DefaultStore"), "StoreID")
+    stores = list(namespace.Stores)
+    if mailboxes:
+        wanted = [m.strip().lower() for m in mailboxes if m.strip()]
+        picked = [s for s in stores if any(w in str(s.DisplayName).lower() for w in wanted)]
+        if not picked:
+            names = ", ".join(str(s.DisplayName) for s in stores)
+            raise OutlookError(f"No mailbox matches {mailboxes}. Available: {names}")
+        return picked
+    if search_in == "mailbox":
+        return [s for s in stores if _safe_get(s, "StoreID") == default_id] or stores[:1]
+    if search_in == "archive":
+        picked = [s for s in stores if store_kind(s) == "archive"]
+        if not picked:
+            raise OutlookError(
+                "No archive mailbox is open in this Outlook profile. If you have an "
+                "online archive it should appear in Outlook's folder pane; see "
+                "outlook_list_mailboxes."
+            )
+        return picked
+    if search_in == "all":
+        return [s for s in stores if store_kind(s) != "public_folders"]
+    raise OutlookError("search_in must be one of: 'folder', 'mailbox', 'archive', 'all'.")
+
+
+def iter_mail_folders(
+    stores: list[Any],
+    *,
+    include_deleted: bool = False,
+    max_depth: int = 8,
+    max_folders: int = 1000,
+) -> Any:
+    """Yield ``(folder, "Mailbox/Path/To/Folder")`` for every mail folder."""
+    count = 0
+    skip = set(_SKIP_FOLDER_NAMES)
+    if not include_deleted:
+        skip |= _SKIP_WHEN_EXCLUDING_DELETED
+
+    def walk(folder: Any, path: str, depth: int):
+        nonlocal count
+        if count >= max_folders:
+            return
+        if str(_safe_get(folder, "Name", "")).lower() in skip:
+            return
+        if _safe_get(folder, "DefaultItemType", MAIL_ITEM_TYPE) == MAIL_ITEM_TYPE and depth > 0:
+            count += 1
+            yield folder, path
+        if depth >= max_depth:
+            return
+        try:
+            subs = list(folder.Folders)
+        except Exception:
+            return
+        for sub in subs:
+            yield from walk(sub, f"{path}/{sub.Name}", depth + 1)
+
+    for store in stores:
+        try:
+            root = store.GetRootFolder()
+        except Exception:
+            continue
+        yield from walk(root, str(_safe_get(store, "DisplayName", "")), 0)

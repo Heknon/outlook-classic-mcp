@@ -5,7 +5,7 @@ Every `outlook_*` tool, with parameters, defaults, return shape, and notes on ch
 ## Contents
 
 - [Mail](#mail) — list_mails, search_mails, search_mails_by_person, get_mail, send_mail, reply_mail, forward_mail, send_draft, list_signatures, move_mail, delete_mail, mark_mail, save_attachments
-- [Folders](#folders) — list_folders, create_folder
+- [Folders](#folders) — list_folders, list_mailboxes, create_folder
 - [Calendar](#calendar) — list_events, get_event, create_event, update_event, delete_event, respond_event, get_free_busy, find_meeting_times
 - [Contacts](#contacts) — list_contacts, search_contacts, get_contact, resolve_name
 - [Tasks](#tasks) — list_tasks, create_task, complete_task
@@ -68,6 +68,18 @@ Find mails exchanged with someone given just their name ("emails from Dana", "wh
 | `response_format` | str | `markdown` | |
 
 **Returns**: `{ person, direction, folders, count, items: [...] }`, items as in `list_mails` plus `folder`. If the name matches several people, nothing is searched: `{ status: "ambiguous", candidates, count: 0, items: [] }` — ask which person, then call again with their `smtp_address`.
+
+### Searching several mailboxes (`search_in`, `mailboxes`)
+
+Both `outlook_search_mails` and `outlook_search_mails_by_person` accept:
+
+| Param       | Type      | Default   | Notes |
+| ----------- | --------- | --------- | ----- |
+| `search_in` | enum      | `"folder"`| `folder` (only `folder`/`folders`), `mailbox` (every folder of your mailbox), `archive` (online/in-place archive), `all` (every mailbox in the profile incl. shared and PSTs; not public folders). |
+| `mailboxes` | list[str] | `null`    | Only these mailboxes (case-insensitive part of the name from `outlook_list_mailboxes`); every folder in each. |
+| `include_deleted` | bool | `false`  | Include Deleted Items / Junk. |
+
+Multi-mailbox results carry `folder` ("Mailbox/Inbox/Projects"), `search_in`, `folders_searched` and, if some folders couldn't be searched, `folder_errors`.
 
 ### `outlook_get_mail`
 
@@ -225,6 +237,12 @@ Walk the folder tree under a root.
 | `response_format`| str     | `markdown` | |
 
 **Returns**: `{ count, items: [{name, path, item_count, unread_count, default_item_type}, ...] }`. The `path` strings are exactly what you pass back as a `folder` parameter elsewhere.
+
+### `outlook_list_mailboxes`
+
+Mailboxes open in Outlook. No parameters.
+
+**Returns**: `{ count, mailboxes: [{name, kind, is_default}] }`, `kind` one of `primary`, `archive`, `shared`, `delegate`, `pst_or_other`, `public_folders`. An archive is recognized by its name ("Online Archive - ...", "In-Place Archive - ...", and the German/Spanish/Hebrew equivalents); if one isn't detected, use its name with `mailboxes=[...]`.
 
 ### `outlook_create_folder`
 

@@ -54,3 +54,24 @@ def register(mcp, bridge) -> None:
         """Create a sub-folder under the given parent."""
         data = await bridge.call(folders_client.create_folder, parent=parent, name=name)
         return format_response(data, "json")
+
+    @mcp.tool(
+        name="outlook_list_mailboxes",
+        annotations={
+            "title": "List mailboxes (incl. archive and shared)",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    )
+    @safe_call
+    async def outlook_list_mailboxes() -> str:
+        """List the mailboxes open in Outlook: yours, the online archive,
+        shared/delegate mailboxes and PST files, with their kind.
+
+        Use the names with search tools' `mailboxes` parameter, or pass
+        search_in='archive' / 'all'.
+        """
+        data = await bridge.call(folders_client.list_mailboxes)
+        return format_response(data, "json")

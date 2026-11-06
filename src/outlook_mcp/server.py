@@ -10,9 +10,16 @@ from outlook_mcp.ui import register_ui
 
 INSTRUCTIONS = """\
 This MCP server gives you full access to Microsoft Outlook desktop on
-Windows via COM automation. It can read and send mail, manage calendar
-events, contacts, tasks, color categories, mail rules, and check
-Out-of-Office status.
+Windows via COM automation. It can read mail and write drafts (and send,
+if the user enabled it), manage calendar events, check colleagues'
+availability, look up people, and work with contacts, tasks, color
+categories, mail rules and Out-of-Office status.
+
+DRAFT-ONLY BY DEFAULT: unless the user set OUTLOOK_MCP_ALLOW_SEND=1,
+nothing can be sent. Mail, replies and forwards are saved to Drafts
+(results say status "saved_to_drafts"), meeting invites and updates are
+saved unsent, and send_draft is refused. Tell the user where the draft
+is; don't try to work around it.
 
 Authentication piggybacks on whatever account Outlook is signed into —
 no Microsoft Graph API, no Entra app registration, no OAuth tokens.
@@ -22,11 +29,19 @@ server auto-launches Outlook on first call; the new "modern" Outlook
 (olk.exe) is NOT supported.
 
 Tool categories (all prefixed `outlook_`):
-  - Mail: list, search, get, send, reply, forward, move, delete, mark, save_attachments
-  - Folders: list_folders, create_folder
-  - Calendar: list_events, get_event, create_event, update_event, delete_event, respond_event
+  - Mail: list, search, search_mails_by_person, get, send, reply, forward
+    (all three take save_only=true for drafts), send_draft, list_signatures,
+    move, delete, mark, save_attachments
+  - Folders: list_folders, create_folder, list_mailboxes (yours, online
+    archive, shared mailboxes, PSTs). Mail searches take search_in=
+    'mailbox' | 'archive' | 'all' or mailboxes=[...] to search every folder
+    of those mailboxes, not just one folder.
+  - Calendar: list_events (also a colleague's shared calendar via mailbox=),
+    get_event, create_event, update_event, delete_event, respond_event,
+    get_free_busy (anyone in the org), find_meeting_times (scheduling assistant)
   - Contacts: list_contacts, search_contacts (incl. org directory/GAL),
-    get_contact, resolve_name (name -> SMTP address)
+    get_contact, resolve_name (like Ctrl+K: name -> address, or candidates
+    to ask the user about when ambiguous)
   - Tasks: list_tasks, create_task, complete_task
   - Categories: list_categories, set_category
   - Rules: list_rules, toggle_rule  (modifies live mail rules — confirm first)
@@ -35,7 +50,9 @@ Tool categories (all prefixed `outlook_`):
 
 Most read tools accept response_format='markdown' (default) or 'json'.
 Item references use Outlook EntryID strings; list tools return them on
-every item — pass them back to detail/edit/delete tools.
+every item — pass them back to detail/edit/delete tools. For one
+occurrence of a recurring meeting pass occurrence_start (its listed
+start); changing a whole series needs apply_to_series=true.
 
 All datetimes are in the USER'S LOCAL timezone with an explicit UTC
 offset (e.g. 2026-06-10T16:33:22+05:00). Present them as-is — do NOT

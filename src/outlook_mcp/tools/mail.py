@@ -13,6 +13,18 @@ from outlook_mcp.utils.formatting import format_response
 from outlook_mcp.utils.safety import safe_call
 
 
+SEARCH_IN_DESC = (
+    "Where to search: 'folder' (just `folder`, the default), 'mailbox' (every "
+    "folder of your mailbox), 'archive' (your online/in-place archive), or "
+    "'all' (every mailbox in the profile: yours, the archive, shared "
+    "mailboxes, PST files)."
+)
+MAILBOXES_DESC = (
+    "Search only these mailboxes (names or parts of names from "
+    "outlook_list_mailboxes), every folder in each. Overrides search_in."
+)
+INCLUDE_DELETED_DESC = "Also search Deleted Items and Junk when searching whole mailboxes."
+
 SAVE_ONLY_DESC = (
     "If true, save to Drafts instead of sending and return the draft's "
     "entry_id. Use this whenever the user asked for a draft or hasn't "
@@ -99,15 +111,26 @@ def register(mcp, bridge) -> None:
             ),
         ] = "subject_body",
         limit: Annotated[int, Field(ge=1, le=100)] = 25,
+        search_in: Annotated[str, Field(description=SEARCH_IN_DESC)] = "folder",
+        mailboxes: Annotated[Optional[list[str]], Field(description=MAILBOXES_DESC)] = None,
+        include_deleted: Annotated[bool, Field(description=INCLUDE_DELETED_DESC)] = False,
         response_format: Annotated[str, Field(description="'markdown' or 'json'.")] = "markdown",
     ) -> CallToolResult:
-        """Search a mail folder by subject, body, or sender."""
+        """Search mail by subject, body, or sender — in one folder, or across
+        whole mailboxes including the online archive and shared mailboxes.
+
+        Multi-mailbox results are newest first and carry each item's folder
+        path ("Mailbox/Inbox/Projects").
+        """
         data = await bridge.call(
             mail_client.search_mails,
             query=query,
             folder=folder,
             limit=limit,
             scope=scope,
+            search_in=search_in,
+            mailboxes=mailboxes,
+            include_deleted=include_deleted,
         )
         return ui_result(format_response(data, response_format), data)
 
@@ -139,6 +162,9 @@ def register(mcp, bridge) -> None:
         ] = None,
         since: Annotated[Optional[str], Field(description="Only mails received after this ISO-8601 time.")] = None,
         limit: Annotated[int, Field(ge=1, le=100)] = 25,
+        search_in: Annotated[str, Field(description=SEARCH_IN_DESC)] = "folder",
+        mailboxes: Annotated[Optional[list[str]], Field(description=MAILBOXES_DESC)] = None,
+        include_deleted: Annotated[bool, Field(description=INCLUDE_DELETED_DESC)] = False,
         response_format: Annotated[str, Field(description="'markdown' or 'json'.")] = "markdown",
     ) -> CallToolResult:
         """Find mails exchanged with a person, given just their name.
@@ -155,6 +181,9 @@ def register(mcp, bridge) -> None:
             folders=folders,
             since=since,
             limit=limit,
+            search_in=search_in,
+            mailboxes=mailboxes,
+            include_deleted=include_deleted,
         )
         return ui_result(format_response(data, response_format), data)
 

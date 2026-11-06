@@ -238,6 +238,32 @@ def main() -> int:
         assert out["count"] >= 1, f"no mails found from {newest['from']}"
         return f"{out['count']} from {out['person'].get('smtp_address')}"
 
+    @check("mailboxes (archive, shared, PSTs)")
+    def t_mailboxes():
+        from outlook_mcp.client import folders
+
+        out = folders.list_mailboxes(outlook, ns)
+        state["mailboxes"] = out["mailboxes"]
+        return ", ".join(f"{m['name']} [{m['kind']}]" for m in out["mailboxes"])
+
+    @check("search all mailboxes for the newest subject")
+    def t_search_all():
+        newest = state.get("newest")
+        if not newest:
+            return "SKIP: no inbox mail"
+        word = max(newest["subject"].split() or ["a"], key=len)
+        out = mail.search_mails(outlook, ns, query=word, search_in="all", scope="subject", limit=10)
+        assert out["count"] >= 1, f"'{word}' not found anywhere"
+        errs = out.get("folder_errors")
+        return f"{out['count']} hits in {out['folders_searched']} folders" + (f"; {len(errs)} folder errors" if errs else "")
+
+    @check("search the archive")
+    def t_search_archive():
+        if not any(m["kind"] == "archive" for m in state.get("mailboxes", [])):
+            return "SKIP: no archive mailbox open in this profile"
+        out = mail.search_mails(outlook, ns, query="a", search_in="archive", scope="subject", limit=3)
+        return f"{out['count']} hits in {out['folders_searched']} archive folders"
+
     @check("signatures")
     def t_sigs():
         out = mail.list_signatures_info(outlook, ns)
@@ -245,7 +271,7 @@ def main() -> int:
 
     for t in (t_whoami, t_list, t_since, t_reply_draft, t_send_refused, t_event,
               t_list_events, t_fb_me, t_find_me, t_colleague, t_shared, t_ctrlk,
-              t_by_person, t_sigs):
+              t_by_person, t_mailboxes, t_search_all, t_search_archive, t_sigs):
         t()
 
     if not args.keep:

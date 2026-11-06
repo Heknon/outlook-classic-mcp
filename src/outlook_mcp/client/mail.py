@@ -6,7 +6,13 @@ import ntpath
 import os
 from typing import Any
 
-from outlook_mcp.client.folders import _safe_get, get_item_by_id, resolve_folder
+from outlook_mcp.client.folders import (
+    _safe_get,
+    get_item_by_id,
+    iter_mail_folders,
+    resolve_folder,
+    select_stores,
+)
 from outlook_mcp.constants import (
     IMPORTANCE_MAP,
     OL_BCC,
@@ -243,6 +249,67 @@ def list_mails(
     }
 
 
+def _search_targets(
+    namespace: Any,
+    *,
+    folder: str | None,
+    search_in: str,
+    mailboxes: list[str] | None,
+    include_deleted: bool,
+    default_folders: list[str],
+) -> list[tuple[Any, str]]:
+    """Folders to search: one folder (the old behaviour) or many mailboxes."""
+    if search_in == "folder" and not mailboxes:
+        specs = [folder] if folder else default_folders
+        out = []
+        for spec in specs:
+            f = resolve_folder(namespace, spec)
+            out.append((f, str(_safe_get(f, "Name", spec))))
+        return out
+    stores = select_stores(namespace, "all" if mailboxes else search_in, mailboxes)
+    return list(iter_mail_folders(stores, include_deleted=include_deleted))
+
+
+def _collect(
+    targets: list[tuple[Any, str]],
+    restrict: str,
+    *,
+    limit: int,
+    keep: Any = None,
+    tag_path: bool,
+) -> tuple[list[dict[str, Any]], int, list[str]]:
+    """Run ``restrict`` on each folder; newest first across all of them."""
+    results: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for f, path in targets:
+        try:
+            items = f.Items.Restrict(restrict)
+            items.Sort("[ReceivedTime]", True)
+        except Exception as exc:  # noqa: BLE001 - one bad folder shouldn't sink the search
+            if len(targets) == 1:
+                raise
+            errors.append(f"{path}: {exc}")
+            continue
+        n = 0
+        for item in items:
+            if _safe_get(item, "Class") not in (OL_CLASS_MAIL, OL_CLASS_MEETING_REQUEST):
+                continue
+            if keep is not None and not keep(item):
+                continue
+            row = _mail_summary(item)
+            if tag_path:
+                row["folder"] = path
+            results.append(row)
+            n += 1
+            if n >= limit:
+                break  # each folder is sorted, so its newest `limit` suffice
+    results.sort(key=lambda r: r.get("received") or "", reverse=True)
+    return results[:limit], len(targets), errors
+
+
+_SEARCH_IN = ("folder", "mailbox", "archive", "all")
+
+
 def search_mails(
     outlook: Any,
     namespace: Any,
@@ -251,57 +318,62 @@ def search_mails(
     folder: str | None = "inbox",
     limit: int = 25,
     scope: str = "subject_body",
+    search_in: str = "folder",
+    mailboxes: list[str] | None = None,
+    include_deleted: bool = False,
 ) -> dict[str, Any]:
-    f = resolve_folder(namespace, folder)
-    items = f.Items
-    items.Sort("[ReceivedTime]", True)
-
+    if search_in not in _SEARCH_IN:
+        raise OutlookError("search_in must be one of: 'folder', 'mailbox', 'archive', 'all'.")
     # Multi-word queries: Restrict on the most selective word, then
     # require the remaining words per item in Python (see
     # split_search_words for why DASL can't do the AND itself).
     remaining: list[str] = []
     if scope == "dasl":
         # Caller is explicitly passing a raw DASL filter; don't mangle it.
-        filtered = items.Restrict(query)
+        restrict = query
     else:
         anchor, remaining = split_search_words(query)
         esc = safe_dasl(anchor)
         if scope == "subject":
-            filtered = items.Restrict(
-                f"@SQL=\"urn:schemas:httpmail:subject\" LIKE '%{esc}%'"
-            )
+            restrict = f"@SQL=\"urn:schemas:httpmail:subject\" LIKE '%{esc}%'"
         elif scope == "from":
-            filtered = items.Restrict(
+            restrict = (
                 f"@SQL=(\"urn:schemas:httpmail:fromemail\" LIKE '%{esc}%' OR "
                 f"\"urn:schemas:httpmail:fromname\" LIKE '%{esc}%' OR "
                 f"\"{SMTP_PROPTAG}\" LIKE '%{esc}%')"
             )
         else:  # subject_body
-            filtered = items.Restrict(
+            restrict = (
                 f"@SQL=(\"urn:schemas:httpmail:subject\" LIKE '%{esc}%' OR "
                 f"\"urn:schemas:httpmail:textdescription\" LIKE '%{esc}%')"
             )
 
-    results: list[dict[str, Any]] = []
-    for item in filtered:
-        cls = _safe_get(item, "Class")
-        if cls not in (OL_CLASS_MAIL, OL_CLASS_MEETING_REQUEST):
-            continue
-        if remaining:
-            haystack = _search_haystack(item, scope)
-            if not all(word in haystack for word in remaining):
-                continue
-        results.append(_mail_summary(item))
-        if len(results) >= limit:
-            break
+    def keep(item: Any) -> bool:
+        if not remaining:
+            return True
+        haystack = _search_haystack(item, scope)
+        return all(word in haystack for word in remaining)
 
-    return {
+    multi = search_in != "folder" or bool(mailboxes)
+    targets = _search_targets(
+        namespace, folder=folder, search_in=search_in, mailboxes=mailboxes,
+        include_deleted=include_deleted, default_folders=["inbox"],
+    )
+    results, searched, errors = _collect(targets, restrict, limit=limit, keep=keep, tag_path=multi)
+    out: dict[str, Any] = {
         "query": query,
         "scope": scope,
-        "folder": f.Name,
         "count": len(results),
         "items": results,
     }
+    if multi:
+        out["search_in"] = "mailboxes" if mailboxes else search_in
+        out["folders_searched"] = searched
+        if errors:
+            out["folder_errors"] = errors[:10]
+    else:
+        out["folder"] = targets[0][1]
+    return out
 
 
 def get_mail(
@@ -933,6 +1005,9 @@ def search_mails_by_person(
     folders: list[str] | None = None,
     since: str | None = None,
     limit: int = 25,
+    search_in: str = "folder",
+    mailboxes: list[str] | None = None,
+    include_deleted: bool = False,
 ) -> dict[str, Any]:
     """Find mails from and/or to a person given a (partial) name or address.
 
@@ -943,6 +1018,8 @@ def search_mails_by_person(
 
     if direction not in _DIRECTIONS:
         raise OutlookError("direction must be one of: 'from', 'to', 'any'.")
+    if search_in not in _SEARCH_IN:
+        raise OutlookError("search_in must be one of: 'folder', 'mailbox', 'archive', 'all'.")
     who = lookup_person(namespace, person)
     if who["status"] != "resolved":
         return {**who, "count": 0, "items": []}
@@ -980,31 +1057,28 @@ def search_mails_by_person(
     if since_dt:
         where += f" AND \"urn:schemas:httpmail:datereceived\" >= '{to_dasl_date(since_dt)}'"
 
-    if folders is None:
-        folders = ["inbox", "sent"] if direction != "from" else ["inbox"]
-    results: list[dict[str, Any]] = []
-    searched: list[str] = []
-    for spec in folders:
-        f = resolve_folder(namespace, spec)
-        searched.append(f.Name)
-        items = f.Items.Restrict("@SQL=" + where)
-        items.Sort("[ReceivedTime]", True)
-        n = 0
-        for item in items:
-            if _safe_get(item, "Class") not in (OL_CLASS_MAIL, OL_CLASS_MEETING_REQUEST):
-                continue
-            row = _mail_summary(item)
-            row["folder"] = f.Name
-            results.append(row)
-            n += 1
-            if n >= limit:
-                break
-    results.sort(key=lambda r: r.get("received") or "", reverse=True)
-    results = results[:limit]
-    return {
+    multi = search_in != "folder" or bool(mailboxes)
+    if multi:
+        targets = _search_targets(
+            namespace, folder=None, search_in=search_in, mailboxes=mailboxes,
+            include_deleted=include_deleted, default_folders=[],
+        )
+    else:
+        specs = folders or (["inbox", "sent"] if direction != "from" else ["inbox"])
+        targets = [(resolve_folder(namespace, sp), "") for sp in specs]
+        targets = [(f, str(_safe_get(f, "Name", ""))) for f, _ in targets]
+    results, searched, errors = _collect(targets, "@SQL=" + where, limit=limit, tag_path=True)
+    out = {
         "person": p,
         "direction": direction,
-        "folders": searched,
         "count": len(results),
         "items": results,
     }
+    if multi:
+        out["search_in"] = "mailboxes" if mailboxes else search_in
+        out["folders_searched"] = searched
+        if errors:
+            out["folder_errors"] = errors[:10]
+    else:
+        out["folders"] = [path for _, path in targets]
+    return out

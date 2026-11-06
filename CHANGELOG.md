@@ -2,6 +2,13 @@
 
 ## 0.5.0
 
+- Search across mailboxes: `search_in` = `mailbox` / `archive` / `all`, or
+  `mailboxes=[...]`, on `outlook_search_mails` and
+  `outlook_search_mails_by_person`; every mail folder is searched, results
+  merged newest first with folder paths; `include_deleted`. New
+  `outlook_list_mailboxes` (primary, archive, shared/delegate, PST).
+- End-to-end test: the real server over stdio against a simulated Outlook
+  (`tests/e2e`), run in CI.
 - `outlook_resolve_name` works like Ctrl+K: partial names and aliases,
   and a list of candidates (title, department, office) when several people
   match instead of just failing.

@@ -135,12 +135,12 @@ the server send, add `"env": { "OUTLOOK_MCP_ALLOW_SEND": "1" }` — see
 
 ## Tools
 
-36 tools across 9 categories, all prefixed `outlook_*`.
+37 tools across 9 categories, all prefixed `outlook_*`.
 
 | Category       | Tools |
 | -------------- | ----- |
 | Mail           | `list_mails`, `search_mails`, `search_mails_by_person`, `get_mail`, `send_mail`, `reply_mail`, `forward_mail`, `send_draft`, `list_signatures`, `move_mail`, `delete_mail`, `mark_mail`, `save_attachments` |
-| Folders        | `list_folders`, `create_folder` |
+| Folders        | `list_folders`, `create_folder`, `list_mailboxes` |
 | Calendar       | `list_events`, `get_event`, `create_event`, `update_event`, `delete_event`, `respond_event`, `get_free_busy`, `find_meeting_times` |
 | Contacts       | `list_contacts`, `search_contacts` (saved contacts + org directory), `get_contact`, `resolve_name` (Ctrl+K: name → address, with candidates when ambiguous) |
 | Tasks          | `list_tasks`, `create_task`, `complete_task` |
@@ -148,6 +148,21 @@ the server send, add `"env": { "OUTLOOK_MCP_ALLOW_SEND": "1" }` — see
 | Rules          | `list_rules`, `toggle_rule` |
 | Out-of-Office  | `get_out_of_office` |
 | Account        | `whoami` — sanity check; shows the bound mailbox |
+
+### Searching everywhere
+
+`search_mails` and `search_mails_by_person` search one folder by default.
+With `search_in` they search every folder of:
+
+- `"mailbox"` — your mailbox,
+- `"archive"` — your online / in-place archive,
+- `"all"` — every mailbox in your Outlook profile: yours, the archive,
+  shared and delegate mailboxes, and PST files,
+
+or `mailboxes=["Support"]` for specific ones (`list_mailboxes` lists
+them). Results are newest first and show the folder path of each mail.
+Deleted Items and Junk are skipped unless `include_deleted=true`. The
+archive and shared mailboxes must be open in Outlook's folder pane.
 
 ### People
 
