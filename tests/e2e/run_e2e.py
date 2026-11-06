@@ -26,7 +26,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-TZ = "Asia/Jerusalem"
+TZ = os.environ.get("E2E_TZ", "Asia/Jerusalem")
 
 
 def server_params(extra_env: dict[str, str] | None = None) -> StdioServerParameters:
@@ -43,6 +43,33 @@ def server_params(extra_env: dict[str, str] | None = None) -> StdioServerParamet
     if sys.platform == "win32":
         env["SYSTEMROOT"] = os.environ.get("SYSTEMROOT", "C:\\Windows")
     return StdioServerParameters(command=sys.executable, args=["-m", "outlook_mcp"], env=env)
+
+
+_OFFSET_CACHE: dict[str, str] = {}
+
+
+def server_offset(day: dt.date) -> str:
+    """The UTC offset the server process will use on ``day`` ("+02:00").
+
+    TZ=Asia/Jerusalem takes effect on Linux/macOS; Windows ignores it and
+    uses the machine's zone, so ask a Python process with the same env.
+    """
+    key = day.isoformat()
+    if key not in _OFFSET_CACHE:
+        import subprocess
+
+        code = (
+            "import datetime as d;"
+            f"print(d.datetime({day.year},{day.month},{day.day},12).astimezone().strftime('%z'))"
+        )
+        z = subprocess.run([sys.executable, "-c", code], env=server_params().env,
+                           capture_output=True, text=True, check=True).stdout.strip()
+        _OFFSET_CACHE[key] = f"{z[:3]}:{z[3:]}"
+    return _OFFSET_CACHE[key]
+
+
+def off(day_offset: int = 0) -> str:
+    return server_offset(dt.date.today() + dt.timedelta(days=day_offset))
 
 
 class Run:
@@ -108,8 +135,8 @@ async def scenario_draft_only(r: Run):
         out = await r.call("outlook_list_mails", folder="inbox", limit=10)
         subjects = [i["subject"] for i in out["items"]]
         assert subjects[0] == "Q3 numbers" or "Early bird" in subjects, subjects
-        assert out["items"][0]["received"].endswith("+02:00"), out["items"][0]["received"]
-        return f"{len(subjects)} mails, local offset +02:00"
+        assert out["items"][0]["received"].endswith(off(0)), out["items"][0]["received"]
+        return f"{len(subjects)} mails, local offset {off(0)}"
 
     async def t_since_midnight():
         midnight = local(0, "00:00")
@@ -229,7 +256,7 @@ async def scenario_draft_only(r: Run):
         out = await r.call("outlook_create_event", subject="Smoke", start=local(2, "14:00"),
                            end=local(2, "14:30"), reminder_minutes=None)
         ev = await r.call("outlook_get_event", entry_id=out["entry_id"])
-        assert ev["start"] == local(2, "14:00") + "+02:00", ev["start"]
+        assert ev["start"] == local(2, "14:00") + off(2), ev["start"]
         r.state["event"] = out["entry_id"]
         return ev["start"]
 
@@ -284,7 +311,7 @@ async def scenario_draft_only(r: Run):
         out = await r.call("outlook_get_free_busy", people=["Yossi", "dana.levi@contoso.com", "ext@gmail.com"],
                            start=local(1, "08:00"), end=local(1, "18:00"))
         by = {p["name"]: p["busy"] for p in out["people"]}
-        assert by["Yossi Mizrahi"] == [{"start": local(1, "11:00") + "+02:00", "end": local(1, "13:00") + "+02:00", "status": "busy"}], by
+        assert by["Yossi Mizrahi"] == [{"start": local(1, "11:00") + off(1), "end": local(1, "13:00") + off(1), "status": "busy"}], by
         statuses = [b["status"] for b in by["Dana Levi"]]
         assert statuses == ["busy", "tentative"], statuses
         assert out["problems"][0]["who"] == "ext@gmail.com", out.get("problems")
@@ -403,14 +430,14 @@ async def scenario_draft_only(r: Run):
 
     for name, fn in [
         ("server lists the new tools", t_tools), ("whoami", t_whoami), ("list inbox", t_list),
-        ("since-midnight filter in UTC+2", t_since_midnight), ("unread + since filters", t_unread_and_since),
+("since-midnight filter (local time)", t_since_midnight), ("unread + since filters", t_unread_and_since),
         ("search subject/body", t_search), ("Ctrl+K unique", t_ctrlk_unique),
         ("Ctrl+K ambiguous", t_ctrlk_ambiguous), ("Ctrl+K alias", t_ctrlk_alias),
         ("mails from person", t_by_person), ("mails to person (CC)", t_by_person_cc),
         ("ambiguous person search", t_by_person_ambiguous), ("reply is a draft by default", t_reply_default_is_draft),
         ("reply-all with extras", t_reply_all_extra), ("plain-text reply", t_plain_reply),
         ("forward with named signature", t_named_signature), ("send_draft refused by default", t_send_draft_refused),
-        ("nothing sent", t_drafts_folder), ("event time round-trip UTC+2", t_event_time), ("all-day event", t_all_day),
+        ("nothing sent", t_drafts_folder), ("event time round-trip (local time)", t_event_time), ("all-day event", t_all_day),
         ("meeting invite not sent", t_meeting_unsent), ("list events + recurrence", t_list_events_window),
         ("recurring series guard", t_series_guard), ("colleague's shared calendar", t_shared_calendar),
         ("unshared calendar error", t_shared_denied), ("free/busy", t_free_busy),
