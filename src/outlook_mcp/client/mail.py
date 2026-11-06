@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ntpath
+import re
 import os
 from typing import Any
 
@@ -33,9 +34,11 @@ from outlook_mcp.utils.formatting import from_iso, to_dasl_date, to_iso, truncat
 from outlook_mcp.utils.html_compose import (
     EMPTY_PARAGRAPH,
     append_to_body,
+    body_inner_html,
     body_insert_position,
     compose_fragment,
     has_auto_signature,
+    has_rtl,
     insert_at_top,
     new_html_document,
     text_to_html,
@@ -43,6 +46,7 @@ from outlook_mcp.utils.html_compose import (
 from outlook_mcp.utils.paths import validate_attachment_path, validate_output_dir
 from outlook_mcp.utils.policy import DRAFT_ONLY_NOTE, draft_only
 from outlook_mcp.utils.safety import safe_dasl
+from outlook_mcp.utils.quoting import split_quoted
 from outlook_mcp.utils.signatures import (
     Signature,
     default_signature_name,
@@ -518,13 +522,21 @@ def _write_reply_body(
     if not body and sig is None:
         return
     body_format = _safe_get(item, "BodyFormat")
-    if body_format == OL_FORMAT_PLAIN and not html and sig is None:
+    # Hebrew/Arabic text needs HTML to be shown right-to-left, so only
+    # left-to-right text keeps a plain-text reply plain.
+    if body_format == OL_FORMAT_PLAIN and not html and sig is None and not has_rtl(body):
         item.Body = body + "\n\n" + (_safe_get(item, "Body", "") or "")
         return
     # HTML, or Rich Text (common for internal Exchange mail): assigning .Body
     # would throw away the formatting of the quoted thread, so work in HTML.
     if body_format != OL_FORMAT_HTML:
+        old_text = str(_safe_get(item, "Body", "") or "")
         item.BodyFormat = OL_FORMAT_HTML  # Outlook converts the existing body
+        current = str(_safe_get(item, "HTMLBody", "") or "")
+        if old_text.strip() and not re.sub(r"<[^>]+>|&nbsp;|\s", "", body_inner_html(current)):
+            # The conversion came back empty: rebuild the quoted history from
+            # the plain text ourselves rather than lose it.
+            item.HTMLBody = new_html_document(text_to_html(old_text))
     fragment = compose_fragment(
         body,
         is_html=html,
@@ -539,6 +551,11 @@ def _write_new_body(item: Any, body: str, html: bool, sig: Signature | None) -> 
         if html:
             item.BodyFormat = OL_FORMAT_HTML
             item.HTMLBody = body
+        elif has_rtl(body):
+            # Plain text can't carry direction: Outlook would show Hebrew
+            # left-aligned. Send it as HTML with right-to-left paragraphs.
+            item.BodyFormat = OL_FORMAT_HTML
+            item.HTMLBody = new_html_document(text_to_html(body))
         else:
             item.BodyFormat = OL_FORMAT_PLAIN
             item.Body = body
@@ -1082,3 +1099,138 @@ def search_mails_by_person(
     else:
         out["folders"] = [path for _, path in targets]
     return out
+
+
+# --------------------------------------------------------------------------
+# Whole conversations
+# --------------------------------------------------------------------------
+
+# PR_CONVERSATION_TOPIC — the subject without RE:/FW: prefixes.
+CONVERSATION_TOPIC_PROPTAG = "http://schemas.microsoft.com/mapi/proptag/0x0070001F"
+
+
+def _conversation_items(item: Any) -> list[Any] | None:
+    """All items of ``item``'s conversation, via Outlook's Conversation API.
+
+    Returns None when conversations aren't available (some profile types
+    or Outlook versions return no Conversation object).
+    """
+    try:
+        conv = item.GetConversation()
+    except Exception:
+        return None
+    if conv is None:
+        return None
+    out: list[Any] = []
+    seen: set[str] = set()
+
+    def walk(node: Any, depth: int) -> None:
+        if depth > 200 or len(out) > 1000:
+            return
+        eid = str(_safe_get(node, "EntryID", "") or "")
+        if eid and eid in seen:
+            return
+        if eid:
+            seen.add(eid)
+        out.append(node)
+        try:
+            children = list(conv.GetChildren(node))
+        except Exception:
+            children = []
+        for child in children:
+            walk(child, depth + 1)
+
+    try:
+        roots = list(conv.GetRootItems())
+    except Exception:
+        return None
+    for root in roots:
+        walk(root, 0)
+    return out
+
+
+def _topic_items(namespace: Any, item: Any) -> list[Any]:
+    """Fallback: same conversation topic in Inbox and Sent Items."""
+    topic = _safe_get(item, "ConversationTopic") or _safe_get(item, "Subject") or ""
+    if not topic:
+        return [item]
+    filt = f"@SQL=\"{CONVERSATION_TOPIC_PROPTAG}\" = '{safe_dasl(str(topic))}'"
+    out = []
+    for spec in ("inbox", "sent"):
+        try:
+            for it in resolve_folder(namespace, spec).Items.Restrict(filt):
+                out.append(it)
+        except Exception:
+            continue
+    return out or [item]
+
+
+def _when(item: Any) -> str:
+    return to_iso(_safe_get(item, "SentOn")) or to_iso(_safe_get(item, "ReceivedTime")) or ""
+
+
+def get_thread(
+    outlook: Any,
+    namespace: Any,
+    *,
+    entry_id: str,
+    strip_quoted: bool = True,
+    max_body_chars: int = 4000,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Every message of the conversation ``entry_id`` belongs to, oldest first."""
+    item = get_item_by_id(namespace, entry_id)
+    items = _conversation_items(item)
+    source = "conversation"
+    if items is None:
+        items = _topic_items(namespace, item)
+        source = "topic_search"
+
+    messages: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for it in items:
+        if _safe_get(it, "Class") not in (OL_CLASS_MAIL, OL_CLASS_MEETING_REQUEST):
+            continue
+        eid = str(_safe_get(it, "EntryID", "") or "")
+        if eid in seen:
+            continue
+        seen.add(eid)
+        body = str(_safe_get(it, "Body", "") or "")
+        quoted = False
+        if strip_quoted:
+            body, quoted = split_quoted(body)
+        truncated = bool(max_body_chars) and len(body) > max_body_chars
+        if truncated:
+            body = body[:max_body_chars].rstrip()
+        attachments = _safe_get(it, "Attachments")
+        parent = _safe_get(it, "Parent")
+        row = {
+            "entry_id": eid,
+            "when": _when(it),
+            "from": _safe_get(it, "SenderName"),
+            "to": _safe_get(it, "To", ""),
+            "cc": _safe_get(it, "CC", ""),
+            "subject": _safe_get(it, "Subject", ""),
+            "folder": _safe_get(parent, "Name"),
+            "is_draft": not _safe_get(it, "Sent", True),
+            "unread": bool(_safe_get(it, "UnRead", False)),
+            "attachment_count": _safe_get(attachments, "Count", 0) or 0,
+            "body": body,
+        }
+        if quoted:
+            row["quoted_history_removed"] = True
+        if truncated:
+            row["body_truncated"] = True
+        messages.append(row)
+
+    messages.sort(key=lambda m: m["when"] or "")
+    total = len(messages)
+    if total > limit:
+        messages = messages[-limit:]  # keep the most recent ones
+    return {
+        "topic": _safe_get(item, "ConversationTopic") or _safe_get(item, "Subject", ""),
+        "count": len(messages),
+        "total_in_thread": total,
+        "source": source,
+        "messages": messages,
+    }

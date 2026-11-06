@@ -250,6 +250,42 @@ def register(mcp, bridge) -> None:
         return ui_result(format_response(data, response_format), data)
 
     @mcp.tool(
+        name="outlook_get_thread",
+        annotations={
+            "title": "Get a whole email thread",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    )
+    @safe_call
+    async def outlook_get_thread(
+        entry_id: Annotated[str, Field(description="EntryID of any message in the thread.")],
+        strip_quoted: Annotated[
+            bool,
+            Field(description="Cut each message's quoted history so it isn't repeated (default). False returns full bodies."),
+        ] = True,
+        max_body_chars: Annotated[int, Field(ge=0, le=100000, description="Per message; 0 = no limit.")] = 4000,
+        limit: Annotated[int, Field(ge=1, le=200, description="At most this many messages (the most recent).")] = 50,
+    ) -> str:
+        """Every message in a conversation, oldest first, in one call.
+
+        Finds the thread across Inbox, Sent Items and other folders, so your
+        own replies are included. Use it to summarize a thread or before
+        drafting a reply to a long one, instead of calling outlook_get_mail
+        on each message.
+        """
+        data = await bridge.call(
+            mail_client.get_thread,
+            entry_id=entry_id,
+            strip_quoted=strip_quoted,
+            max_body_chars=max_body_chars,
+            limit=limit,
+        )
+        return format_response(data, "json")
+
+    @mcp.tool(
         name="outlook_send_mail",
         annotations={
             "title": "Send Outlook mail (or save as draft)",

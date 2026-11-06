@@ -121,7 +121,7 @@ async def scenario_draft_only(r: Run):
         expected = {
             "outlook_reply_mail", "outlook_send_draft", "outlook_find_meeting_times",
             "outlook_get_free_busy", "outlook_search_mails_by_person", "outlook_resolve_name",
-            "outlook_list_mailboxes",
+            "outlook_list_mailboxes", "outlook_get_thread",
         }
         assert expected <= tools, expected - tools
         return f"{len(tools)} tools"
@@ -177,8 +177,8 @@ async def scenario_draft_only(r: Run):
     async def t_by_person():
         out = await r.call("outlook_search_mails_by_person", person="Dana Levi", direction="from")
         subjects = sorted(i["subject"] for i in out["items"])
-        assert subjects == ["Old thread", "Q3 numbers"], subjects
-        return "2 from Dana Levi"
+        assert subjects == ["Offsite plan", "Old thread", "Q3 numbers", "RE: Offsite plan"], subjects
+        return "4 from Dana Levi"
 
     async def t_by_person_cc():
         out = await r.call("outlook_search_mails_by_person", person="Yossi Mizrahi", direction="to")
@@ -249,7 +249,8 @@ async def scenario_draft_only(r: Run):
         out = await r.call("outlook_list_mails", folder="drafts", limit=20)
         assert out["count"] >= 4, out["count"]
         sent = await r.call("outlook_list_mails", folder="sent", limit=20)
-        assert sent["count"] == 0, f"something was SENT: {[i['subject'] for i in sent['items']]}"
+        subjects = [i["subject"] for i in sent["items"]]
+        assert subjects == ["RE: Offsite plan"], f"something was SENT: {subjects}"  # only the seeded one
         return f"{out['count']} drafts, 0 sent"
 
     async def t_event_time():
@@ -408,7 +409,7 @@ async def scenario_draft_only(r: Run):
     async def t_person_all():
         out = await r.call("outlook_search_mails_by_person", person="Dana Levi", direction="from", search_in="all")
         subjects = [i["subject"] for i in out["items"]]
-        assert subjects == ["Q3 numbers", "Old thread", "Budget 2024 final"], subjects
+        assert subjects == ["Q3 numbers", "RE: Offsite plan", "Offsite plan", "Old thread", "Budget 2024 final"], subjects
         return "inbox + archive"
 
     async def t_bad_mailbox():
@@ -418,6 +419,48 @@ async def scenario_draft_only(r: Run):
             assert "Available:" in str(exc), exc
             return "lists available mailboxes"
         raise AssertionError("unknown mailbox accepted")
+
+    async def t_thread():
+        mails = await r.call("outlook_search_mails", query="Offsite plan", scope="subject", folder="inbox")
+        last = next(i for i in mails["items"] if i["subject"] == "RE: Offsite plan")
+        out = await r.call("outlook_get_thread", entry_id=last["entry_id"])
+        got = [(m["from"], m["folder"], m["body"]) for m in out["messages"]]
+        assert got == [
+            ("Dana Levi", "Inbox", "Can we do the offsite on Thursday?"),
+            ("Ori Harel", "Sent Items", "Thursday is fine, booking Room Galil.\n\nOri"),
+            ("Dana Levi", "Inbox", "מעולה, תודה!"),
+        ], got
+        assert out["source"] == "conversation" and out["topic"] == "Offsite plan"
+        return "3 messages incl. Sent Items, quotes stripped (English + Hebrew headers)"
+
+    async def t_thread_full():
+        mails = await r.call("outlook_search_mails", query="Offsite plan", scope="subject", folder="inbox")
+        last = next(i for i in mails["items"] if i["subject"] == "RE: Offsite plan")
+        out = await r.call("outlook_get_thread", entry_id=last["entry_id"], strip_quoted=False)
+        assert "נשלח: יום חמישי" in out["messages"][2]["body"]
+        return "full bodies on request"
+
+    async def t_hebrew_reply():
+        mails = await r.call("outlook_list_mails", folder="inbox", limit=20)
+        note = next(i for i in mails["items"] if i["subject"] == "Plain text note")
+        out = await r.call("outlook_reply_mail", entry_id=note["entry_id"], body="תודה יוסי,\nאחזור אליך מחר.")
+        draft = await r.call("outlook_get_mail", entry_id=out["entry_id"], include_html=True)
+        html = draft["html_body"]
+        assert "dir=RTL" in html and "<span lang=HE>תודה יוסי,</span>" in html, html[:300]
+        assert html.index("תודה יוסי") < html.index("Plain text note")
+        return "plain-text thread answered as RTL HTML"
+
+    async def t_hebrew_new_mail():
+        out = await r.call("outlook_send_mail", to=["Yossi"], subject="פגישה מחר", body="היי יוסי,\nנפגש ב-10?")
+        draft = await r.call("outlook_get_mail", entry_id=out["entry_id"], include_html=True)
+        assert draft["html_body"].count("dir=RTL") == 2, draft["html_body"][:300]
+        return "new Hebrew mail is RTL"
+
+    for name, fn in [
+        ("whole thread in one call", t_thread), ("thread with full bodies", t_thread_full),
+        ("Hebrew reply is right-to-left", t_hebrew_reply), ("Hebrew new mail is right-to-left", t_hebrew_new_mail),
+    ]:
+        await r.check(name, fn())
 
     for name, fn in [
         ("list mailboxes", t_mailboxes), ("search default scope unchanged", t_folder_scope_unchanged),
@@ -452,7 +495,7 @@ async def scenario_send_enabled(r: Run):
         out = await r.call("outlook_send_mail", to=["Yossi"], subject="Hello", body="Hi")
         assert out["status"] == "sent", out
         sent = await r.call("outlook_list_mails", folder="sent", limit=5)
-        assert [i["subject"] for i in sent["items"]] == ["Hello"], sent
+        assert [i["subject"] for i in sent["items"]] == ["Hello", "RE: Offsite plan"], sent
         return "sent and in Sent Items"
 
     async def t_unresolved():

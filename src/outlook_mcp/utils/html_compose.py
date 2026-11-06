@@ -14,6 +14,7 @@ Nothing here touches COM, so it is unit-testable on any platform.
 from __future__ import annotations
 
 import re
+import unicodedata
 from html import escape
 
 _BODY_OPEN_RE = re.compile(r"<body\b[^>]*>", re.IGNORECASE)
@@ -28,21 +29,55 @@ AUTO_SIGNATURE_MARKER = "_MailAutoSig"
 EMPTY_PARAGRAPH = "<p class=MsoNormal>&nbsp;</p>"
 
 
+def base_direction(text: str) -> str | None:
+    """'rtl' or 'ltr' from the first strongly directional character.
+
+    The same rule as HTML ``dir=auto`` / Word's paragraph detection, so a
+    line like "שלום, see the attached PDF" is right-to-left and
+    "Re: הצעת מחיר" is left-to-right. None when there is no letter at all.
+    """
+    for ch in text:
+        bidi = unicodedata.bidirectional(ch)
+        if bidi in ("R", "AL"):
+            return "rtl"
+        if bidi == "L":
+            return "ltr"
+    return None
+
+
+def has_rtl(text: str) -> bool:
+    return any(unicodedata.bidirectional(ch) in ("R", "AL") for ch in text or "")
+
+
+# What Outlook/Word write for a right-to-left paragraph.
+_RTL_P = "<p class=MsoNormal dir=RTL style='text-align:right;direction:rtl;unicode-bidi:embed'>"
+
+
 def text_to_html(text: str) -> str:
     """Convert plain text to Outlook-style ``MsoNormal`` paragraphs.
 
     One paragraph per line; blank lines become empty paragraphs so the
-    spacing the author typed is kept. Text is HTML-escaped.
+    spacing the author typed is kept. Text is HTML-escaped. Lines whose
+    first letter is Hebrew/Arabic become right-to-left paragraphs (blank
+    lines between them too, so the gap sits on the right side).
     """
     if not text:
         return ""
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    dirs = [base_direction(line) for line in lines]
     out = []
-    for line in lines:
+    prev_dir = None
+    for line, direction in zip(lines, dirs):
         if line.strip():
             # Keep runs of spaces (indentation, aligned text) visible.
             safe = escape(line, quote=False).replace("  ", " &nbsp;")
-            out.append(f"<p class=MsoNormal>{safe}</p>")
+            if direction == "rtl":
+                out.append(f"{_RTL_P}<span lang=HE>{safe}</span></p>")
+            else:
+                out.append(f"<p class=MsoNormal>{safe}</p>")
+            prev_dir = direction or prev_dir
+        elif prev_dir == "rtl":
+            out.append(f"{_RTL_P}&nbsp;</p>")
         else:
             out.append(EMPTY_PARAGRAPH)
     return "".join(out)

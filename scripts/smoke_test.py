@@ -131,6 +131,27 @@ def main() -> int:
             assert 0 <= body_at < html.find(MARKER), "reply text is not inside <body>"
         return f"draft {out['subject'][:50]!r} in Drafts, same conversation"
 
+    @check("whole thread of the newest mail")
+    def t_thread():
+        newest = state.get("newest")
+        if not newest:
+            return "SKIP: no inbox mail"
+        out = mail.get_thread(outlook, ns, entry_id=newest["entry_id"])
+        assert out["count"] >= 1, out
+        folders = sorted({m["folder"] for m in out["messages"] if m.get("folder")})
+        return f"{out['total_in_thread']} messages via {out['source']} in {folders}"
+
+    @check("Hebrew draft is right-to-left")
+    def t_hebrew():
+        newest = state.get("newest")
+        if not newest:
+            return "SKIP: no inbox mail"
+        out = mail.reply_mail(outlook, ns, entry_id=newest["entry_id"], body="בדיקה - " + MARKER)
+        draft = get_item_by_id(ns, out["entry_id"])
+        cleanup.append(draft)
+        assert draft.BodyFormat == 2 and "dir=RTL" in draft.HTMLBody, "not RTL HTML"
+        return "dir=RTL paragraph in the draft (open it in Outlook to eyeball it)"
+
     @check("send_draft refused in draft-only mode")
     def t_send_refused():
         if not cleanup:
@@ -269,7 +290,7 @@ def main() -> int:
         out = mail.list_signatures_info(outlook, ns)
         return f"{len(out['signatures'])} found; default new={out['default_new']!r}, reply={out['default_reply_forward']!r}"
 
-    for t in (t_whoami, t_list, t_since, t_reply_draft, t_send_refused, t_event,
+    for t in (t_whoami, t_list, t_since, t_reply_draft, t_thread, t_hebrew, t_send_refused, t_event,
               t_list_events, t_fb_me, t_find_me, t_colleague, t_shared, t_ctrlk,
               t_by_person, t_mailboxes, t_search_all, t_search_archive, t_sigs):
         t()

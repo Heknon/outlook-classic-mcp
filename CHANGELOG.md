@@ -2,6 +2,13 @@
 
 ## 0.5.0
 
+- New `outlook_get_thread`: a whole conversation in one call, oldest first,
+  across folders (incl. Sent Items and drafts), with quoted history removed
+  (English and Hebrew reply headers and other common formats).
+- Hebrew/Arabic text in drafts is written as right-to-left paragraphs
+  (`dir=RTL`, first-strong-character rule); Hebrew new mail and Hebrew
+  replies to plain-text mail use HTML. Switching a plain-text reply to HTML
+  keeps the quoted history even if Outlook's conversion comes back empty.
 - **Plugin installs everything itself.** `/plugin marketplace add
   Heknon/outlook-classic-mcp` + `/plugin install outlook@outlook-classic-mcp`
   is enough: `scripts/launch-mcp.cmd` installs uv per user if missing (or

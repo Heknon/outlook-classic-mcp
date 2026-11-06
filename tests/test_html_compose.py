@@ -92,3 +92,33 @@ def test_new_html_document_wraps_fragment():
     doc = new_html_document("<p>x</p>")
     assert "<div class=WordSection1><p>x</p></div>" in doc
     assert "charset=utf-8" in doc
+
+
+# ------------------------------------------------------------ RTL (Hebrew)
+
+from outlook_mcp.utils.html_compose import base_direction, has_rtl  # noqa: E402
+
+
+def test_base_direction_uses_first_strong_character():
+    assert base_direction("שלום דנה") == "rtl"
+    assert base_direction("שלום, see the attached PDF") == "rtl"
+    assert base_direction("Re: הצעת מחיר") == "ltr"
+    assert base_direction("  123, 456 — שלום") == "rtl"  # digits/punctuation are neutral
+    assert base_direction("مرحبا") == "rtl"  # Arabic
+    assert base_direction("1234 !!") is None
+
+
+def test_hebrew_lines_become_rtl_paragraphs():
+    out = text_to_html("שלום דנה,\n\nמצורף הקובץ.\nThanks")
+    paras = out.split("</p>")[:-1]
+    assert len(paras) == 4
+    assert "dir=RTL" in paras[0] and "<span lang=HE>שלום דנה,</span>" in paras[0]
+    assert "dir=RTL" in paras[1] and "&nbsp;" in paras[1]  # blank line keeps RTL side
+    assert "dir=RTL" in paras[2]
+    assert paras[3] == "<p class=MsoNormal>Thanks"
+
+
+def test_hebrew_is_escaped_and_english_unchanged():
+    assert "&lt;b&gt;" in text_to_html("שלום <b>")
+    assert text_to_html("Hello") == "<p class=MsoNormal>Hello</p>"
+    assert has_rtl("abc ש") and not has_rtl("abc") and not has_rtl("")

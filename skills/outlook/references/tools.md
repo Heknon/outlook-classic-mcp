@@ -4,7 +4,7 @@ Every `outlook_*` tool, with parameters, defaults, return shape, and notes on ch
 
 ## Contents
 
-- [Mail](#mail) — list_mails, search_mails, search_mails_by_person, get_mail, send_mail, reply_mail, forward_mail, send_draft, list_signatures, move_mail, delete_mail, mark_mail, save_attachments
+- [Mail](#mail) — list_mails, search_mails, search_mails_by_person, get_mail, get_thread, send_mail, reply_mail, forward_mail, send_draft, list_signatures, move_mail, delete_mail, mark_mail, save_attachments
 - [Folders](#folders) — list_folders, list_mailboxes, create_folder
 - [Calendar](#calendar) — list_events, get_event, create_event, update_event, delete_event, respond_event, get_free_busy, find_meeting_times
 - [Contacts](#contacts) — list_contacts, search_contacts, get_contact, resolve_name
@@ -96,6 +96,19 @@ Fetch the body, all headers, and the attachment manifest for one mail. Read-only
 **Returns**: `{ entry_id, conversation_id, subject, from, from_address, to, cc, bcc, received, sent, unread, importance, categories, attachments: [{index, filename, size_bytes}], body }` plus `body_truncated`/`body_total_chars` when the cap was hit (re-call with a higher `max_body_chars` to read more) and `html_body` when `include_html=true`.
 
 `attachments[].index` is **1-indexed**; pass it to `save_attachments` to save a single file.
+
+### `outlook_get_thread`
+
+Every message in the conversation that `entry_id` belongs to, oldest first, in one call. Uses Outlook's conversation view (all folders, incl. Sent Items and drafts); falls back to matching the conversation topic in Inbox + Sent Items (`source: "topic_search"`).
+
+| Param            | Type   | Default | Notes |
+| ---------------- | ------ | ------- | ----- |
+| `entry_id`       | string | required | Any message in the thread. |
+| `strip_quoted`   | bool   | `true`  | Cut each message's quoted history. |
+| `max_body_chars` | int    | `4000`  | Per message; `0` = no limit. |
+| `limit`          | int    | `50`    | Keeps the most recent messages. |
+
+**Returns**: `{ topic, count, total_in_thread, source, messages: [{entry_id, when, from, to, cc, subject, folder, is_draft, unread, attachment_count, body, quoted_history_removed?, body_truncated?}] }`.
 
 ### `outlook_send_mail`
 

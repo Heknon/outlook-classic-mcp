@@ -231,3 +231,37 @@ def test_reply_to_rich_text_mail_converts_to_html_instead_of_flattening():
     assert reply.BodyFormat == 2
     assert reply.Body == "Quoted RTF"  # .Body never overwritten
     assert reply.HTMLBody.index("Answer") < reply.HTMLBody.index("Quoted RTF")
+
+
+def test_hebrew_reply_to_html_mail_is_rtl_inside_body():
+    reply, _, ns = _reply_setup()
+    mail_mod.reply_mail(None, ns, entry_id="ORIG", body="תודה דנה,\nאבדוק היום.", save_only=True)
+    html = reply.HTMLBody
+    i = html.index("תודה דנה")
+    assert html.rfind("dir=RTL", 0, i) > html.index("<div class=WordSection1>")
+    assert i < html.index("From:")
+
+
+def test_hebrew_reply_to_plain_mail_switches_to_html():
+    reply, _, ns = _reply_setup(html=None, body_format=1)
+    mail_mod.reply_mail(None, ns, entry_id="ORIG", body="בסדר", save_only=True)
+    assert reply.BodyFormat == 2
+    assert "dir=RTL" in reply.HTMLBody
+
+
+def test_new_hebrew_mail_is_html_rtl():
+    mail = FakeMail(entry_id="N3")
+    mail_mod.send_mail(
+        fake_outlook_creating(mail), FakeNamespace({}),
+        to=["a@x.com"], subject="פגישה", body="היי,\nנפגש מחר?", save_only=True,
+    )
+    assert mail.BodyFormat == 2 and mail.HTMLBody.count("dir=RTL") == 2
+
+
+def test_plain_to_html_switch_keeps_quoted_text_if_conversion_is_empty():
+    # tests._fakes.FakeMail does not convert on BodyFormat change: the
+    # fallback must rebuild the quoted history from the plain text.
+    reply, _, ns = _reply_setup(html=None, body_format=1)
+    mail_mod.reply_mail(None, ns, entry_id="ORIG", body="בסדר", save_only=True)
+    html = reply.HTMLBody
+    assert html.index("בסדר") < html.index("Original")

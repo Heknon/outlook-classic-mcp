@@ -150,11 +150,11 @@ the server send, add `"env": { "OUTLOOK_MCP_ALLOW_SEND": "1" }` — see
 
 ## Tools
 
-37 tools across 9 categories, all prefixed `outlook_*`.
+38 tools across 9 categories, all prefixed `outlook_*`.
 
 | Category       | Tools |
 | -------------- | ----- |
-| Mail           | `list_mails`, `search_mails`, `search_mails_by_person`, `get_mail`, `send_mail`, `reply_mail`, `forward_mail`, `send_draft`, `list_signatures`, `move_mail`, `delete_mail`, `mark_mail`, `save_attachments` |
+| Mail           | `list_mails`, `search_mails`, `search_mails_by_person`, `get_mail`, `get_thread`, `send_mail`, `reply_mail`, `forward_mail`, `send_draft`, `list_signatures`, `move_mail`, `delete_mail`, `mark_mail`, `save_attachments` |
 | Folders        | `list_folders`, `create_folder`, `list_mailboxes` |
 | Calendar       | `list_events`, `get_event`, `create_event`, `update_event`, `delete_event`, `respond_event`, `get_free_busy`, `find_meeting_times` |
 | Contacts       | `list_contacts`, `search_contacts` (saved contacts + org directory), `get_contact`, `resolve_name` (Ctrl+K: name → address, with candidates when ambiguous) |
@@ -187,6 +187,14 @@ archive and shared mailboxes must be open in Outlook's folder pane.
 - `search_mails_by_person(person="Dana", direction="from")` finds mails
   from and/or to someone by name, across Inbox and Sent Items.
 
+### Threads
+
+`get_thread(entry_id)` returns every message of a conversation in one
+call, oldest first — across Inbox, Sent Items and other folders, so your
+own replies are included — with each reply's quoted history removed
+(English and Hebrew Outlook headers, "Original Message", "On … wrote:").
+`strip_quoted=false` gives full bodies.
+
 ### Drafting
 
 - `send_mail`, `reply_mail` and `forward_mail` all take `save_only=true`
@@ -202,6 +210,11 @@ archive and shared mailboxes must be open in Outlook's folder pane.
   default for replies — not added twice if Outlook already put one in);
   `signature="<name>"` picks a saved signature (`list_signatures` lists
   them). Signature images are embedded.
+- Hebrew (and Arabic) text is written as right-to-left paragraphs, the
+  way Outlook does it, so drafts are aligned and punctuated correctly;
+  mixed lines take the direction of their first letter. Hebrew text in a
+  new mail or a reply to a plain-text mail is sent as HTML, since plain
+  text can't carry direction.
 - Recipients are resolved before saving or sending; a send with
   unresolvable names is refused instead of failing inside Outlook.
 

@@ -269,6 +269,19 @@ class MailItem(_Item):
     def ReceivedTime(self):
         return _load(self._received)
 
+    # Like Outlook, switching a plain-text item to HTML converts its text.
+    @property
+    def BodyFormat(self):
+        return self._fmt
+
+    @BodyFormat.setter
+    def BodyFormat(self, value):
+        old = getattr(self, "_fmt", None)
+        self._fmt = value
+        if old == 1 and value == 2 and self.Body and not self.HTMLBody:
+            paras = "".join(f"<p class=MsoNormal>{line or '&nbsp;'}</p>" for line in self.Body.split("\n"))
+            self.HTMLBody = f"<html><body><div class=WordSection1>{paras}</div></body></html>"
+
     # Like Outlook: assigning To/CC/BCC replaces those recipients; reading
     # them gives the display string. Received mail keeps its seeded strings.
     def _set_line(self, kind, value):
@@ -315,6 +328,36 @@ class MailItem(_Item):
             for a in self.Attachments:
                 r.Attachments._items.append(a)
         return r
+
+    def GetConversation(self):
+        app = self._app
+        conv_id = self.ConversationID
+
+        def all_folders():
+            stack = [app._root] + [st.GetRootFolder() for st in app._extra_stores]
+            while stack:
+                f = stack.pop()
+                yield f
+                stack.extend(f._subs)
+
+        members = [i for f in all_folders() for i in f._items
+                   if getattr(i, "ConversationID", None) == conv_id]
+        members.sort(key=lambda i: i._received or i._sent_on or dt.datetime.max)
+
+        class _Conversation:  # linear thread: each message answers the previous
+            def GetRootItems(self):
+                return members[:1]
+
+            def GetChildren(self, node):
+                ids = [m.EntryID for m in members]
+                i = ids.index(node.EntryID) if node.EntryID in ids else -1
+                return members[i + 1:i + 2] if i >= 0 else []
+
+        return _Conversation()
+
+    @property
+    def ConversationTopic(self):
+        return re.sub(r"^(?:(?:RE|FW|AW|WG)\s*:\s*)+", "", self.Subject, flags=re.I)
 
     def Reply(self):
         return self._new_response("RE", True)
@@ -840,6 +883,25 @@ class Application:
         mail("Design review", "Dana Cohen", 26)
         mail("Plain text note", "Yossi Mizrahi", 50, html=False)
         mail("Old thread", "Dana Levi", 24 * 10)
+
+        # A three-message thread: Dana -> my reply (Sent Items) -> Dana.
+        first = mail("Offsite plan", "Dana Levi", 30, html=False,
+                     body="Can we do the offsite on Thursday?")
+        mine = MailItem(self, Subject="RE: Offsite plan", SenderName=self._me.Name,
+                        _sender_smtp=self._me.PrimarySmtpAddress, BodyFormat=1, Sent=True,
+                        ConversationID=first.ConversationID,
+                        Body=("Thursday is fine, booking Room Galil.\n\nOri\n\n"
+                              "________________________________\nFrom: Dana Levi\n"
+                              "Sent: Thursday\nSubject: Offsite plan\n\n"
+                              "Can we do the offsite on Thursday?"))
+        mine._display = {1: "Dana Levi", 2: "", 3: ""}
+        mine._received = mine._sent_on = first._received + dt.timedelta(hours=1)
+        self._folders[5]._add(mine)
+        last = mail("RE: Offsite plan", "Dana Levi", 28, html=False,
+                    body=("מעולה, תודה!\n\n________________________________\n"
+                          "מאת: אורי הראל\nנשלח: יום חמישי\nנושא: RE: Offsite plan\n\n"
+                          "Thursday is fine, booking Room Galil."))
+        last.ConversationID = first.ConversationID
 
         # My calendar: tomorrow 10:00-11:00 busy.
         tomorrow = today + dt.timedelta(days=1)
