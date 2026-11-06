@@ -1,8 +1,8 @@
 {
   "name": "outlook-classic-mcp",
   "owner": {
-    "name": "Anas Ahmed Shaikh",
-    "url": "https://github.com/anasahmed07"
+    "name": "Ori Harel",
+    "url": "https://github.com/Heknon"
   },
   "metadata": {
     "description": "Single-plugin marketplace that ships the `outlook` agent plugin (Claude Code, Cowork, Copilot, Cursor, and other plugin-compatible agents) — full Microsoft Outlook (classic desktop) integration: mail, calendar, contacts, tasks, categories, rules, OOO."
@@ -12,10 +12,16 @@
       "name": "outlook",
       "source": "./",
       "description": "Use Microsoft Outlook end-to-end from your agent. Bundles the outlook-classic-mcp local MCP server and the operational skill that teaches the agent how to drive it.",
-      "version": "0.3.2",
+      "version": "0.4.0",
       "category": "productivity",
-      "keywords": ["outlook", "email", "calendar", "windows", "mcp"],
-      "homepage": "https://github.com/anasahmed07/Outlook-Classic-MCP"
+      "keywords": [
+        "outlook",
+        "email",
+        "calendar",
+        "windows",
+        "mcp"
+      ],
+      "homepage": "https://github.com/Heknon/outlook-classic-mcp"
     }
   ]
 }

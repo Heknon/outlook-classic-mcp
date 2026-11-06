@@ -4,7 +4,7 @@ Every `outlook_*` tool, with parameters, defaults, return shape, and notes on ch
 
 ## Contents
 
-- [Mail](#mail) — list_mails, search_mails, get_mail, send_mail, reply_mail, forward_mail, move_mail, delete_mail, mark_mail, save_attachments
+- [Mail](#mail) — list_mails, search_mails, get_mail, send_mail, reply_mail, forward_mail, send_draft, list_signatures, move_mail, delete_mail, mark_mail, save_attachments
 - [Folders](#folders) — list_folders, create_folder
 - [Calendar](#calendar) — list_events, get_event, create_event, update_event, delete_event, respond_event
 - [Contacts](#contacts) — list_contacts, search_contacts, get_contact, resolve_name
@@ -72,53 +72,81 @@ Fetch the body, all headers, and the attachment manifest for one mail. Read-only
 
 ### `outlook_send_mail`
 
-Compose and send a new mail, or save it to Drafts. Has external side effect.
+Compose a new mail and send it, or save it to Drafts. Has external side effect unless `save_only=true`.
 
 | Param          | Type      | Default   | Notes |
 | -------------- | --------- | --------- | ----- |
-| `to`           | list[str] | required  | One or more SMTP addresses. |
+| `to`           | list[str] | required  | One or more SMTP addresses or resolvable names. |
 | `subject`      | string    | required  | |
 | `body`         | string    | required  | Plain text unless `html=true`. |
 | `cc`           | list[str] | `null`    | |
 | `bcc`          | list[str] | `null`    | |
 | `html`         | bool      | `false`   | When true, `body` is HTML. |
-| `attachments`  | list[str] | `null`    | Absolute paths under user profile. |
+| `attachments`  | list[str] | `null`    | Absolute paths under the user profile (or `OUTLOOK_MCP_ALLOWED_PATHS`). |
 | `importance`   | enum      | `"normal"`| `low` / `normal` / `high`. |
 | `save_only`    | bool      | `false`   | **Save to Drafts instead of sending.** |
+| `account`      | string    | `null`    | Send from (and save into the Drafts of) this account — SMTP address or display name. |
+| `signature`    | bool/str  | `null`    | `true`/`"default"` = the account's default signature for new mail; or a name from `outlook_list_signatures`. |
 
-**Returns** (sent): `{ status: "sent", to, cc, bcc, subject }`. (Drafts): `{ status: "saved_to_drafts", entry_id, subject }`.
+**Returns** (sent): `{ status: "sent", subject, to, cc, bcc }`. (Drafts): `{ status: "saved_to_drafts", entry_id, subject, to, cc, bcc }`. Either may carry `signature` (the name used) and `notes` (e.g. draft-only mode, unresolved recipients).
 
-Always confirm the recipient list and subject with the user before calling this tool unless they have explicitly authorized you to send.
+Always confirm the recipient list and subject with the user before sending unless they have explicitly authorized you to send. Recipients that can't be resolved block a send with an error; a draft is still saved and the names are listed in `notes`.
 
 ### `outlook_reply_mail`
 
-Reply (or reply-all) to an existing mail. The original message is appended below your body, the same way Outlook's Reply button does it. Has external side effect.
+Reply (or reply-all) to an existing mail. Uses Outlook's own Reply, so the message stays in the conversation thread and the quoted original (with its formatting) is kept below your text. Has external side effect unless `save_only=true`.
 
 | Param         | Type      | Default | Notes |
 | ------------- | --------- | ------- | ----- |
 | `entry_id`    | string    | required | The mail being replied to. |
-| `body`        | string    | required | Your reply text. The quoted original is appended automatically. |
-| `reply_all`   | bool      | `false`  | If true, includes the original CC list. |
-| `html`        | bool      | `false`  | |
+| `body`        | string    | required | Your reply text, placed above the quoted original. |
+| `reply_all`   | bool      | `false`  | If true, includes the original To/CC list. |
+| `html`        | bool      | `false`  | Treat `body` as an HTML fragment. |
 | `attachments` | list[str] | `null`   | |
+| `to` / `cc` / `bcc` | list[str] | `null` | Extra recipients, added to the reply's own. |
+| `subject`     | string    | `null`   | Replace the subject (default keeps `RE: ...`). |
+| `importance`  | enum      | `null`   | `low` / `normal` / `high`. |
+| `signature`   | bool/str  | `null`   | `true` = default reply/forward signature (skipped if Outlook already added one), or a signature name. |
+| `save_only`   | bool      | `false`  | **Save the threaded reply to Drafts instead of sending.** |
 
-**Returns**: `{ status: "sent", reply_all, in_reply_to, subject }`.
+**Returns**: `{ status: "sent" | "saved_to_drafts", in_reply_to, reply_all, subject, entry_id? , notes? }`.
 
-This sends immediately; there's no `save_only` flag on `reply_mail`. To stage a reply for review, copy the original's recipients yourself and call `send_mail` with `save_only=true` instead.
+To stage a reply for review: `outlook_reply_mail(..., save_only=true)`, tell the user, and once they approve call `outlook_send_draft(entry_id)` (or let them send it from Outlook).
 
 ### `outlook_forward_mail`
 
-Forward an existing mail to new recipients with an optional note above. Has external side effect.
+Forward an existing mail (with its attachments) and an optional note above it. Has external side effect unless `save_only=true`.
 
 | Param      | Type      | Default | Notes |
 | ---------- | --------- | ------- | ----- |
 | `entry_id` | string    | required | |
-| `to`       | list[str] | required | |
-| `body`     | string    | `""`     | Optional note prepended to the forwarded content. |
-| `cc`       | list[str] | `null`   | |
+| `to`       | list[str] | `null`   | Required unless `save_only=true`. |
+| `body`     | string    | `""`     | Optional note above the forwarded content. |
+| `cc` / `bcc` | list[str] | `null` | |
 | `html`     | bool      | `false`  | |
+| `attachments` | list[str] | `null` | Extra files to attach. |
+| `subject`  | string    | `null`   | Replace the subject (default keeps `FW: ...`). |
+| `importance` | enum    | `null`   | |
+| `signature` | bool/str | `null`   | As for replies. |
+| `save_only` | bool     | `false`  | Save to Drafts instead of sending. |
 
-**Returns**: `{ status: "sent", forwarded, to, subject }`.
+**Returns**: `{ status, forwarded, to, subject, entry_id?, notes? }`.
+
+### `outlook_send_draft`
+
+Send a draft that is already in Drafts (from a `save_only` result or found with `outlook_list_mails(folder="drafts")`). Confirm with the user first. Refused in draft-only mode, for items already sent, and for drafts with no or unresolvable recipients.
+
+| Param      | Type   | Default | Notes |
+| ---------- | ------ | ------- | ----- |
+| `entry_id` | string | required | |
+
+**Returns**: `{ status: "sent", subject, to, cc, bcc }`.
+
+### `outlook_list_signatures`
+
+List the user's saved Outlook signatures and which are the defaults. No parameters.
+
+**Returns**: `{ folder, signatures: [names], default_new, default_reply_forward }`.
 
 ### `outlook_move_mail`
 
@@ -198,9 +226,11 @@ Create a sub-folder under a parent.
 
 ## Calendar
 
+Times are local wall-clock ISO-8601 strings (an explicit offset is converted to local). For recurring meetings, every occurrence returned by `outlook_list_events` carries the **series** `entry_id`; its `recurrence` field is `occurrence` (or `exception` for a moved one). To act on one occurrence pass `occurrence_start` = that item's `start`, exactly as listed. Changing or deleting a whole series (`recurrence: "series"`, no `occurrence_start`) is refused unless `apply_to_series=true`.
+
 ### `outlook_list_events`
 
-List calendar events in a date range, including expanded recurring instances.
+List calendar events overlapping a date range, including expanded recurring instances.
 
 | Param                 | Type    | Default        | Notes |
 | --------------------- | ------- | -------------- | ----- |
@@ -210,7 +240,7 @@ List calendar events in a date range, including expanded recurring instances.
 | `include_recurrences` | bool    | `true`         | If false, only the master entries — usually you want true. |
 | `response_format`     | str     | `markdown`     | |
 
-**Returns**: `{ start, end, count, items: [...] }`. Items: `entry_id, subject, start, end, location, organizer, is_recurring, all_day, preview` (200-char body excerpt).
+**Returns**: `{ start, end, count, items: [...], truncated }`. Items: `entry_id, subject, start, end, location, organizer, is_recurring, recurrence ("none" | "series" | "occurrence" | "exception"), all_day, preview`.
 
 ### `outlook_get_event`
 
@@ -219,50 +249,67 @@ Full event detail, including attendees and their RSVP status.
 | Param      | Type   | Default | Notes |
 | ---------- | ------ | ------- | ----- |
 | `entry_id` | string | required | |
+| `occurrence_start` | ISO-8601 | `null` | One occurrence of a series. |
 | `response_format` | str | `markdown` | |
 
 **Returns**: summary fields + `body, attendees: [{name, address, type, response}], reminder_minutes, categories`.
 
 ### `outlook_create_event`
 
-Create a calendar event or meeting invite. **Adding any attendee turns this into a meeting that is sent immediately on success — there is no draft state for meeting invites.**
+Create an appointment, all-day event, or meeting. **With attendees, invitations are sent on success unless `send_invites=false`.**
 
 | Param               | Type           | Default | Notes |
 | ------------------- | -------------- | ------- | ----- |
 | `subject`           | string         | required | |
-| `start`             | ISO-8601       | required | |
-| `end`               | ISO-8601       | required | |
+| `start`             | ISO-8601       | required | A date (`2026-12-24`) is fine for all-day events. |
+| `end`               | ISO-8601       | `null`  | Required unless `all_day`; for all-day it is the last day, inclusive (default: one day). |
 | `location`          | string         | `null`  | |
 | `body`              | string         | `null`  | |
-| `attendees`         | list[str]      | `null`  | Email addresses. Adding any value here makes this a meeting and sends invites. |
-| `is_online_meeting` | bool           | `false` | Reserved — current behavior is to mark the meeting; the actual Teams/Zoom link is added by Outlook clients. |
-| `reminder_minutes`  | int 0–10080    | `15`    | Minutes before start. |
+| `attendees`         | list[str]      | `null`  | Required attendees — makes this a meeting. |
+| `optional_attendees`| list[str]      | `null`  | |
+| `all_day`           | bool           | `false` | |
+| `send_invites`      | bool           | `true`  | `false` saves the meeting unsent; the user opens it in Outlook and clicks Send. |
+| `busy_status`       | enum           | `null`  | `free` / `tentative` / `busy` / `out_of_office` / `working_elsewhere`. |
+| `reminder_minutes`  | int 0–10080    | `15`    | `null` = no reminder. |
 | `recurrence`        | Recurrence obj | `null`  | See SKILL.md → Recurrence. |
+| `is_online_meeting` | bool           | `false` | Reserved; ignored by classic Outlook COM. |
 
-**Returns**: `{ status: "created", entry_id, subject, start, end }`.
+**Returns**: `{ status: "created", entry_id, subject, start, end, all_day, invites_sent, notes? }`.
 
 Confirm attendee list, times, and recurrence with the user before calling.
 
 ### `outlook_update_event`
 
-Update fields on an event. Only non-null fields are written. Does **not** modify recurrence — for cadence changes, delete and recreate.
+Update an event. Only non-null fields are written. Does **not** modify recurrence — for cadence changes, delete and recreate.
 
 | Param      | Type     | Default | Notes |
 | ---------- | -------- | ------- | ----- |
 | `entry_id` | string   | required | |
-| `subject`  | string   | `null`  | |
-| `start`    | ISO-8601 | `null`  | |
-| `end`      | ISO-8601 | `null`  | |
-| `location` | string   | `null`  | |
-| `body`     | string   | `null`  | |
+| `subject`, `location`, `body` | string | `null` | |
+| `start` / `end` | ISO-8601 | `null` | |
+| `all_day`  | bool     | `null`  | Turn all-day on/off (with `start`, snaps to whole days). |
+| `reminder_minutes` | int | `null` | |
+| `busy_status` | enum  | `null`  | |
+| `add_attendees` / `add_optional_attendees` | list[str] | `null` | |
+| `remove_attendees` | list[str] | `null` | Address or display name. |
+| `send_update` | bool  | `false` | For meetings you organize: send the update to attendees. Without it only your calendar changes. |
+| `occurrence_start` | ISO-8601 | `null` | Change just this occurrence. |
+| `apply_to_series` | bool | `false` | Required to change a whole recurring series. |
 
-**Returns**: `{ status: "updated", entry_id }`. If the event has attendees, Outlook may send an updated-meeting notification when this saves.
+**Returns**: `{ status: "updated", entry_id, update_sent, removed_attendees?, notes? }`.
 
 ### `outlook_delete_event`
 
-Delete a calendar event. **If the event has attendees, this sends a cancellation notice.**
+Delete an event. For a meeting you organize, a cancellation is sent to attendees first (`send_cancellation=false` deletes it from your calendar only). As an attendee, the meeting is just removed — use `outlook_respond_event` to decline if the organizer should know.
 
-**Returns**: `{ status: "deleted", subject, entry_id }`.
+| Param      | Type   | Default | Notes |
+| ---------- | ------ | ------- | ----- |
+| `entry_id` | string | required | |
+| `send_cancellation` | bool | `true` | |
+| `occurrence_start` | ISO-8601 | `null` | Delete (cancel) just this occurrence. |
+| `apply_to_series` | bool | `false` | Required to delete a whole series. |
+
+**Returns**: `{ status: "deleted", subject, entry_id, cancellation_sent, notes? }`.
 
 ### `outlook_respond_event`
 
@@ -273,8 +320,10 @@ Respond to a meeting invite.
 | `entry_id`      | string | required | |
 | `response`      | enum   | required | `accept` / `tentative` / `decline`. |
 | `send_response` | bool   | `true`   | Set false to record locally without emailing the organizer. |
+| `comment`       | string | `null`   | Note included in the response. |
+| `occurrence_start` | ISO-8601 | `null` | Respond to one occurrence. |
 
-**Returns**: `{ status: "responded", response }`.
+**Returns**: `{ status: "responded" | "response_saved_to_drafts", response }`.
 
 ---
 

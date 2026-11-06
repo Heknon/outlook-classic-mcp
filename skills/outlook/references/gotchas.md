@@ -38,30 +38,39 @@ The integration has `outlook_get_out_of_office` (read state) but no tool to set 
 
 ## "Why did everyone get an email when I just rescheduled the meeting?"
 
-Updating an event with attendees usually triggers Outlook to send an updated-meeting notification. Likewise, deleting an event with attendees sends a cancellation. There is no flag to suppress this.
+`outlook_update_event` only changes the user's calendar unless you pass `send_update=true`, so attendees aren't notified by accident. Deleting a meeting you organize sends a cancellation unless `send_cancellation=false`.
 
-**Workaround**: warn the user up front. If they want a quiet local-only change, they have to do it in Outlook directly with "Don't send updates" — the integration can't suppress it.
+**Ask the user** whether attendees should be told, then pass the flag. If you changed a meeting without `send_update`, the result's `notes` say attendees weren't notified — relay that.
+
+## "I only wanted to move tomorrow's standup, not all of them"
+
+Every occurrence of a recurring meeting in `outlook_list_events` carries the **series** `entry_id`. Passing that id alone would edit the whole series, so the server refuses with a "recurring series" error unless you pass either:
+
+- `occurrence_start` = the occurrence's `start` exactly as listed → changes/deletes/responds to that one occurrence; or
+- `apply_to_series=true` → changes/deletes the whole series.
+
+Ask the user which they mean when it isn't obvious.
 
 ## Created a meeting and the invite went out before the user reviewed
 
-`outlook_create_event` with `attendees=[...]` sends the invite **the moment the call succeeds**. There is no draft state for meeting invites the way there is for plain mail (`save_only=true`).
+`outlook_create_event` with attendees sends the invite **the moment the call succeeds** unless `send_invites=false`.
 
-**Mitigation**: confirm subject, time, and attendee list with the user before calling. If the user wants to compose carefully, create the event without `attendees` first, then have them add attendees manually in Outlook.
+**Mitigation**: confirm subject, time, and attendee list with the user before calling. If they want to review it first, pass `send_invites=false`: the meeting is saved in their calendar and they click Send in Outlook.
 
-## "I replied — can you save that to drafts so I can edit it first?"
+## "Draft a reply so I can edit it first"
 
-`outlook_reply_mail` doesn't have a `save_only` flag. It sends.
+Use `outlook_reply_mail(..., save_only=true)` (or `outlook_forward_mail(..., save_only=true)`). The draft is a real reply — threaded, with the quoted history — and the result has its `entry_id`. Tell the user it's in Drafts. When they approve, `outlook_send_draft(entry_id)` sends it, or they send it from Outlook.
 
-**Workaround**: build the reply yourself and save it via `outlook_send_mail(save_only=true)`:
+## Everything ends up in Drafts and `send_draft` is refused
 
-```
-to = [original.from_address]                        # or all of original.to/cc for reply-all
-subject = "Re: " + original.subject                 # don't double-prefix
-body = your_reply + "\n\n" + original.body          # quote manually
-outlook_send_mail(to=to, subject=subject, body=body, save_only=true)
-```
+The server is running in draft-only mode (`OUTLOOK_MCP_DRAFT_ONLY=1`); the result's `notes` say so. That's the user's (or IT's) choice — don't look for a way around it. Tell them the draft is waiting in Outlook.
 
-Tell the user the draft is in the Drafts folder for them to review.
+## Signature missing, doubled, or images broken
+
+- Pass `signature=true` for the default signature, or a name from `outlook_list_signatures`.
+- Replies created by Outlook may already contain its automatic signature; with `signature=true` the server detects that and doesn't add another (see `notes`).
+- If there's no default reply/forward signature configured, `notes` say so — pass a name instead.
+- Signature images are embedded from the signatures folder. If the user's signatures live somewhere unusual, set `OUTLOOK_MCP_SIGNATURES_DIR`.
 
 ## Item not found / EntryID errors after a move
 
@@ -154,7 +163,7 @@ If the numbers disagree, trust the per-item `unread` flag.
 
 **Fix**: use a store-qualified path. `outlook_list_folders(root=null)` shows the top-level store names; pass `"<Store Display Name>/Inbox"`. Confirm the active mailbox with `outlook_whoami` if you're not sure which is which.
 
-## Send error mentions "ResolveAll" or "recipient could not be resolved"
+## Send error mentions "recipients could not be resolved"
 
 The address you passed to `attendees=` (or in `to`/`cc`/`bcc`) couldn't be resolved against the user's address book or directory. Possible causes:
 

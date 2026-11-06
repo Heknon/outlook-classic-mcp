@@ -51,15 +51,15 @@ Use `since` if the user wants only today: `since="<today>T00:00:00"`.
 4. Draft the reply text yourself, grounded in step 3's body.
 5. Show the draft to the user and ask "send or save to drafts?".
 6. Either:
-     a) outlook_reply_mail(entry_id=<id>, body=<draft>)         # sends
-     b) Recreate as a draft via outlook_send_mail(
-          to=[from_address from step 3], subject="Re: <subject>",
-          body=<draft>, save_only=true)                         # stages
+     a) outlook_reply_mail(entry_id=<id>, body=<draft>)                  # sends
+     b) outlook_reply_mail(entry_id=<id>, body=<draft>, save_only=true)  # stages
+        → tell the user it's in Drafts; once they approve, either they send
+          it from Outlook or you call outlook_send_draft(entry_id=<draft id>).
 ```
 
 Why step 3: list/search results carry only a 200-character preview. Replying off the preview produces vague, generic responses.
 
-Why "send or save": `reply_mail` sends immediately. There is no `save_only` flag on `reply_mail`. If the user wants to review before sending, you must build it as a draft via `send_mail(save_only=true)`.
+Why `save_only` on the reply itself: the draft stays in the conversation thread with the quoted original, exactly as if the user had clicked Reply. Don't rebuild replies by hand with `send_mail`.
 
 ## 3. Reply-all with an attachment
 
@@ -201,15 +201,19 @@ If the user prefers a count, use `occurrences` instead of `end_date`. Omit both 
 
 ```
 1. outlook_list_events(...) or outlook_get_event(entry_id) → confirm correct event
-2. outlook_update_event(
+2. If its "recurrence" is "occurrence"/"exception", ask: just this one or the series?
+3. outlook_update_event(
       entry_id=<id>,
       start="<new start>",
-      end="<new end>")
+      end="<new end>",
+      occurrence_start="<that item's start>",   # just this occurrence
+      # or apply_to_series=true                  # the whole series
+      send_update=true)                          # if attendees should be told
 ```
 
 `update_event` rewrites only the fields you pass. It cannot change recurrence cadence — for that, delete and recreate.
 
-If the event has attendees, Outlook will likely send an updated-meeting notification when the change saves. Mention that to the user.
+Without `send_update=true` only the user's calendar changes; attendees are not notified. Ask the user which they want.
 
 ## 13. Accept or decline a meeting invite
 

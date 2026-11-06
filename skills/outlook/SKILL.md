@@ -90,14 +90,19 @@ Most read tools accept `response_format='markdown'` (default; pretty for the use
 ### Read tools are free; write tools have side effects
 
 Read freely:
-`list_mails`, `search_mails`, `get_mail`, `list_folders`, `list_events`, `get_event`, `list_contacts`, `search_contacts`, `get_contact`, `resolve_name`, `list_tasks`, `list_categories`, `list_rules`, `get_out_of_office`, `whoami`.
+`list_mails`, `search_mails`, `get_mail`, `list_folders`, `list_events`, `get_event`, `list_contacts`, `search_contacts`, `get_contact`, `resolve_name`, `list_tasks`, `list_categories`, `list_rules`, `get_out_of_office`, `list_signatures`, `whoami`.
 
 Confirm before calling (these change shared state or send messages):
-`send_mail`, `reply_mail`, `forward_mail`, `delete_mail`, `move_mail`, `mark_mail`, `save_attachments`, `create_event` (especially with attendees — that sends a meeting invite immediately), `update_event`, `delete_event`, `respond_event` (with `send_response=true`), `create_folder`, `create_task`, `complete_task`, `set_category`, `toggle_rule`.
+`send_mail`, `reply_mail`, `forward_mail`, `send_draft`, `delete_mail`, `move_mail`, `mark_mail`, `save_attachments`, `create_event` (especially with attendees — that sends a meeting invite immediately), `update_event`, `delete_event`, `respond_event` (with `send_response=true`), `create_folder`, `create_task`, `complete_task`, `set_category`, `toggle_rule`.
 
-Two staging tricks worth knowing:
-- `outlook_send_mail(..., save_only=true)` saves to Drafts without sending — perfect for "draft a reply for me to look at" requests.
+Staging (draft) options — prefer these whenever the user says "draft" or hasn't explicitly approved sending:
+- `outlook_send_mail`, `outlook_reply_mail` and `outlook_forward_mail` all take `save_only=true`: the message is saved to Drafts and its `entry_id` returned. Replies and forwards stay properly threaded with the quoted history intact. Tell the user it's in Drafts.
+- `outlook_send_draft(entry_id)` sends a saved draft once the user approves it — no need to recreate it.
+- `outlook_create_event(..., send_invites=false)` saves a meeting in the calendar without sending the invitations.
+- `outlook_update_event` changes only the user's calendar unless `send_update=true`.
 - `outlook_respond_event(..., send_response=false)` records your local accept/decline without emailing the organizer.
+
+If the server runs with `OUTLOOK_MCP_DRAFT_ONLY=1`, nothing can be sent: compose tools always save drafts (the result has `status: "saved_to_drafts"` and a note), `send_draft` is refused, and invites/updates/cancellations are not sent. Don't try to work around it — tell the user the draft is waiting in Outlook.
 
 ## Default workflow
 
@@ -115,7 +120,9 @@ Read `references/gotchas.md` for the complete list. The non-negotiables:
 - **OOO is read-only here.** `get_out_of_office` reports state; there is no tool to enable/disable. If the user wants to set OOO, tell them to use Outlook → File → Automatic Replies.
 - **Programmatic Access prompts** on corporate machines can silently block `send_mail`/`reply_mail`/`forward_mail`/`delete_mail`. If the user reports "you said you sent it but I don't see it", point them to Outlook → File → Options → Trust Center → Programmatic Access.
 - **First call after a cold start can take several seconds.** Don't retry as if it had failed.
-- **A meeting that has attendees is sent the moment `create_event` succeeds** — there's no "save as draft" for invites. Confirm attendee list and times before calling.
+- **A meeting that has attendees is sent the moment `create_event` succeeds** unless you pass `send_invites=false`. Confirm attendee list and times before calling.
+- **Recurring meetings: an occurrence's `entry_id` is the series id.** To change, delete or respond to one occurrence, pass `occurrence_start` (that occurrence's `start` exactly as `list_events` returned it). Changing or deleting the whole series requires `apply_to_series=true` — ask the user which they mean.
+- **Signatures:** pass `signature=true` (the account default) or a name from `outlook_list_signatures`. Replies may already contain Outlook's automatic signature; the server won't add it twice.
 - **Only classic Outlook is supported.** If the user is on the new Outlook (`olk.exe`), the tools won't see it. Tell them to switch back to classic Outlook.
 
 ## Reference files (load on demand)

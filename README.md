@@ -12,7 +12,15 @@ speaks MCP.
 It talks to Outlook's COM API on Windows via `pywin32`, the same path
 macros and Office add-ins use. Authentication piggybacks on whatever
 account Outlook is already signed into — **no Azure / Entra app
-registration, no Microsoft Graph API, no OAuth tokens.**
+registration, no Microsoft Graph API, no OAuth tokens.** That also means
+it works the same with on-premises Exchange, ADFS or any other sign-in
+Outlook itself handles.
+
+This is a fork of [anasahmed07/Outlook-Classic-MCP](https://github.com/anasahmed07/Outlook-Classic-MCP)
+that adds threaded reply/forward drafts, sending a reviewed draft,
+signatures, a draft-only safety mode, fuller calendar support, and the
+fixes from the upstream pull requests that were still waiting to be
+merged. See [What's different in this fork](#whats-different-in-this-fork).
 
 ---
 
@@ -32,43 +40,48 @@ server auto-launches Outlook on its first COM call.
 
 ## Install
 
-Three paths, simplest first.
+### Option 1 — Claude Code plugin (recommended)
 
-### Option 1 — Agent plugin (recommended)
+Installs the MCP server *and* the bundled [`outlook` skill](#agent-skill)
+in one step. The server is fetched and run on demand by `uvx` straight
+from this repository.
 
-The repo doubles as a **plugin marketplace**. Installing the plugin registers the MCP server *and* loads the bundled [`outlook` skill](#agent-skill) (an operational reference that teaches the agent how to drive these tools) in one step. The MCP server itself is fetched on demand by `uvx` directly from PyPI — no `git clone`, no `pip install`, no `.venv` to maintain.
-
-The plugin format started in Claude Code and is now supported by other agents too (Cowork, Copilot, Cursor, and others that adopted the plugin/skill format) — point your agent's plugin install flow at this repo. The commands below are for Claude Code:
-
-Install [`uv`](https://docs.astral.sh/uv/) once if you don't have it:
+Install [`uv`](https://docs.astral.sh/uv/) once if you don't have it
+(`git` must also be on PATH):
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-Open a fresh terminal so PATH refreshes, then in any Claude Code session:
+Open a fresh terminal so PATH refreshes, then in Claude Code:
 
 ```text
-/plugin marketplace add anasahmed07/Outlook-Classic-MCP
+/plugin marketplace add Heknon/outlook-classic-mcp
 /plugin install outlook@outlook-classic-mcp
 ```
 
-Restart Claude Code (`/quit`, reopen). First call has a one-time 5–15 s pause while `uvx` resolves the package; subsequent calls are instant. Confirm with `outlook_whoami`.
+Restart Claude Code and confirm with `outlook_whoami`.
 
-To update later: `/plugin marketplace update outlook-classic-mcp` then `/plugin update outlook@outlook-classic-mcp`. To pull a fresh PyPI release of the server itself: `uv cache clean outlook-classic-mcp`.
-
-### Option 2 — From PyPI with uv (any MCP client)
-
-Works for any MCP client. The smart client installer auto-registers the server with Claude Desktop, Claude Code, Cursor, Cline, Continue, and Windsurf; for other clients (e.g. VS Code / Copilot agent mode), add the server to their MCP config manually — see below.
+### Option 2 — From a clone (any MCP client)
 
 ```bat
-uv pip install --system outlook-classic-mcp
-python -m outlook_mcp.scripts.install_to_clients
+git clone https://github.com/Heknon/outlook-classic-mcp
+cd outlook-classic-mcp
+install.bat
 ```
 
-(`uv` is Astral's Python installer — see Option 1 above for the one-line install. `--system` writes to your system Python so `python -m outlook_mcp` resolves anywhere; drop the flag if you'd rather install into an active venv.)
+`install.bat` creates a `.venv`, installs the package, and runs the
+client installer below to register the server with Claude Desktop,
+Claude Code, Cursor, Cline, Continue or Windsurf.
 
-Package: <https://pypi.org/project/outlook-classic-mcp/>.
+### Option 3 — Manual registration
+
+```powershell
+claude mcp add outlook -- uvx --from git+https://github.com/Heknon/outlook-classic-mcp outlook-mcp
+```
+
+Append `@<commit or tag>` to the URL to pin a version. For other clients
+see [Manual config](#manual-config-any-other-mcp-client).
 
 ---
 
@@ -106,24 +119,27 @@ server entry in its MCP config:
   "mcpServers": {
     "outlook": {
       "command": "uvx",
-      "args": ["--from", "outlook-classic-mcp", "outlook-mcp"]
+      "args": ["--from", "git+https://github.com/Heknon/outlook-classic-mcp", "outlook-mcp"],
+      "env": { "OUTLOOK_MCP_DRAFT_ONLY": "1" }
     }
   }
 }
 ```
 
 (VS Code / Copilot agent mode names the top-level key `servers` in
-`mcp.json` instead of `mcpServers`; the entry itself is the same.)
+`mcp.json` instead of `mcpServers`; the entry itself is the same. Drop the
+`env` line if you want the server to be able to send — see
+[Safety](#safety-drafts-first).)
 
 ---
 
 ## Tools
 
-31 tools across 9 categories, all prefixed `outlook_*`.
+33 tools across 9 categories, all prefixed `outlook_*`.
 
 | Category       | Tools |
 | -------------- | ----- |
-| Mail           | `list_mails`, `search_mails`, `get_mail`, `send_mail`, `reply_mail`, `forward_mail`, `move_mail`, `delete_mail`, `mark_mail`, `save_attachments` |
+| Mail           | `list_mails`, `search_mails`, `get_mail`, `send_mail`, `reply_mail`, `forward_mail`, `send_draft`, `list_signatures`, `move_mail`, `delete_mail`, `mark_mail`, `save_attachments` |
 | Folders        | `list_folders`, `create_folder` |
 | Calendar       | `list_events`, `get_event`, `create_event`, `update_event`, `delete_event`, `respond_event` |
 | Contacts       | `list_contacts`, `search_contacts` (saved contacts + org directory), `get_contact`, `resolve_name` |
@@ -132,6 +148,79 @@ server entry in its MCP config:
 | Rules          | `list_rules`, `toggle_rule` |
 | Out-of-Office  | `get_out_of_office` |
 | Account        | `whoami` — sanity check; shows the bound mailbox |
+
+### Drafting
+
+- `send_mail`, `reply_mail` and `forward_mail` all take `save_only=true`
+  to save to Drafts instead of sending. Reply and forward drafts are real
+  Outlook replies: threaded, with the quoted history and its formatting
+  intact. The result includes the draft's `entry_id`.
+- `send_draft(entry_id)` sends a draft once you've reviewed it.
+- Reply text goes *inside* the message body, above the quoted original,
+  so it uses the message's own font and spacing.
+- Replies and forwards can add To/CC/BCC recipients, change the subject,
+  and set importance.
+- `signature=true` adds your default Outlook signature (the reply/forward
+  default for replies — not added twice if Outlook already put one in);
+  `signature="<name>"` picks a saved signature (`list_signatures` lists
+  them). Signature images are embedded.
+- Recipients are resolved before saving or sending; a send with
+  unresolvable names is refused instead of failing inside Outlook.
+
+### Calendar
+
+- All-day events (`all_day=true`, dates only).
+- Meetings can be saved without sending invitations (`send_invites=false`).
+- `update_event` changes only your calendar unless `send_update=true`;
+  it can add and remove attendees.
+- Deleting a meeting you organize sends a cancellation first
+  (`send_cancellation=false` to skip).
+- Recurring meetings: pass `occurrence_start` to change, delete or
+  respond to a single occurrence. Changing a whole series needs
+  `apply_to_series=true`, so "move tomorrow's standup" can't move all of
+  them by accident.
+- Meeting responses can include a comment.
+
+---
+
+## Safety: drafts first
+
+Set `OUTLOOK_MCP_DRAFT_ONLY=1` in the server's environment and the
+server cannot send anything: compose tools always save to Drafts,
+`send_draft` is refused, and meeting invites, updates, cancellations and
+responses are saved unsent. You review and send from Outlook. This is
+the recommended setting for a work mailbox.
+
+In Claude Code you can also gate individual tools. For example, in
+`.claude/settings.json` (tool names assume the server is registered as
+`outlook`; `/mcp` shows the real names):
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__outlook__outlook_whoami",
+      "mcp__outlook__outlook_list_mails",
+      "mcp__outlook__outlook_search_mails",
+      "mcp__outlook__outlook_get_mail",
+      "mcp__outlook__outlook_list_folders",
+      "mcp__outlook__outlook_list_events",
+      "mcp__outlook__outlook_get_event",
+      "mcp__outlook__outlook_list_signatures"
+    ],
+    "deny": [
+      "mcp__outlook__outlook_delete_mail",
+      "mcp__outlook__outlook_toggle_rule"
+    ]
+  }
+}
+```
+
+Everything not listed asks for approval each time.
+
+Email bodies are written by other people and end up in the model's
+context, so treat them as untrusted input — another reason to keep
+sending behind a review step.
 
 ---
 
@@ -190,7 +279,7 @@ skills/outlook/
     └── setup.md              # install instructions an agent can walk a user through when the tools aren't connected yet
 ```
 
-Installing the [plugin](#option-1--agent-plugin-recommended) auto-loads this skill alongside the MCP server. For an agent that supports skills but not plugins, copy the `skills/outlook/` directory into wherever it loads skills from.
+Installing the [plugin](#option-1--claude-code-plugin-recommended) auto-loads this skill alongside the MCP server. For an agent that supports skills but not plugins, copy the `skills/outlook/` directory into wherever it loads skills from.
 
 ---
 
@@ -220,9 +309,19 @@ on every item; pass them back to detail / edit / delete tools.
 `isError: true`. Error messages try to suggest a corrective next step.
 
 **Filesystem paths** for `attachments=` and `output_dir=` must be
-absolute and under the user profile (default sandbox). Set
-`OUTLOOK_MCP_ALLOW_ANY_PATH=1` to disable the sandbox if you legitimately
-need to read or write outside `%USERPROFILE%`.
+absolute and under the user profile (default sandbox). Add other folders
+with `OUTLOOK_MCP_ALLOWED_PATHS` (`;`-separated), or set
+`OUTLOOK_MCP_ALLOW_ANY_PATH=1` to disable the sandbox entirely.
+
+**Environment variables**
+
+| Variable | Effect |
+| -------- | ------ |
+| `OUTLOOK_MCP_DRAFT_ONLY=1` | Nothing can be sent; see [Safety](#safety-drafts-first). |
+| `OUTLOOK_MCP_ALLOWED_PATHS` | Extra folders for attachments / saved attachments. |
+| `OUTLOOK_MCP_ALLOW_ANY_PATH=1` | Disable the path sandbox. |
+| `OUTLOOK_MCP_SIGNATURES_DIR` | Signatures folder, if not `%APPDATA%\Microsoft\Signatures`. |
+| `OUTLOOK_MCP_LOG` | Log level (`DEBUG`, `INFO`, ...). |
 
 ---
 
@@ -268,13 +367,9 @@ npx @modelcontextprotocol/inspector .venv\Scripts\python.exe -m outlook_mcp
 > The inspector mangles backslashes on Windows — use forward-slash
 > paths if you hit "ENOENT" errors.
 
-Publish to PyPI:
-
-```bat
-publish.bat
-```
-
-(`TWINE_USERNAME=__token__`, `TWINE_PASSWORD=<pypi-token>`.)
+Tests mock COM, so they run on any OS (`tests/conftest.py` stubs
+`pywin32` off Windows; a handful of bridge tests need real pywin32 and
+only run on Windows). CI runs both.
 
 ---
 
@@ -293,7 +388,8 @@ publish.bat
 - Send / reply / forward / delete may trigger Outlook's "Programmatic
   Access" security prompts on some corporate machines. If your IT
   policy blocks programmatic send entirely, write tools will fail —
-  read tools still work.
+  read tools still work. Resolving recipients against the address book
+  can trigger the same prompt.
 - Some properties (e.g. `SenderEmailAddress` for Exchange addresses)
   come back as `EX:/O=...` distinguished names rather than SMTP. Use
   `from_address` substring matching instead of exact equality — or
@@ -324,7 +420,34 @@ trusted publisher.
 
 ---
 
+## What's different in this fork
+
+Merged from upstream pull requests that were open at the time:
+
+- [#19](https://github.com/anasahmed07/Outlook-Classic-MCP/pull/19) — event and task times were written one UTC offset early.
+- [#11](https://github.com/anasahmed07/Outlook-Classic-MCP/pull/11) — date filters broke on non-US date formats; multi-day events were missed; attachment errors failed whole mail reads; faster failure while Outlook reconnects.
+- [#16](https://github.com/anasahmed07/Outlook-Classic-MCP/pull/16) — recipients resolved before saving drafts.
+- [#18](https://github.com/anasahmed07/Outlook-Classic-MCP/pull/18) — send from a chosen account; default signature on new mail.
+
+Added here (mostly from [upstream issue #13](https://github.com/anasahmed07/Outlook-Classic-MCP/issues/13)):
+
+- Reply and forward drafts (`save_only`), `send_draft`, and draft-only mode.
+- Reply/forward text inserted inside the HTML body instead of before `<html>`;
+  plain-text replies no longer flatten an HTML thread.
+- To/CC/BCC, subject and importance on replies and forwards.
+- Named signatures, default reply signatures, embedded signature images.
+- All-day events, unsent meetings, meeting updates and cancellations,
+  attendee changes, single-occurrence edits and the series guard,
+  busy status, optional attendees, response comments.
+- Date filters (which Outlook evaluates in UTC) now convert local times
+  to UTC, so "since this morning" means this morning.
+- `OUTLOOK_MCP_ALLOWED_PATHS` for attachment folders outside the profile.
+
+See [CHANGELOG.md](CHANGELOG.md) for details.
+
+---
+
 ## License
 
-MIT
+MIT — original work © Anas Ahmed Shaikh, fork changes © Ori Harel.
 
