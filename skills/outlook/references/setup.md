@@ -15,31 +15,20 @@ Ask the user to confirm each one. If any answer is no, stop and address that bef
 
 The user does **not** need to have Outlook open before install; the integration auto-launches Outlook on its first call.
 
-## Install path A — agent plugin (simplest, recommended)
+## Install path A — Claude Code plugin (simplest, recommended)
 
-The whole repo ships as a **plugin** (single-plugin marketplace). Installing it registers both the MCP server *and* this skill in one step. The MCP server is fetched and run on demand by `uvx` straight from the GitHub repository (`Heknon/outlook-classic-mcp`) — no `pip install`, no `git clone`, no `.venv` to maintain. The slash commands below are Claude Code's; other agents have their own equivalent.
-
-### Prereq: `uv` on PATH
-
-The plugin's MCP server entry uses `uvx`, Astral's zero-install Python launcher. If the user doesn't have `uv` yet, install it once:
-
-PowerShell (recommended on Windows):
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-Then **open a fresh terminal** (PATH refresh) before continuing. Confirm with `uv --version`. `uvx` also needs `git` on PATH to fetch from GitHub.
-
-### Install the plugin
+The repository is a plugin marketplace. In Claude Code on the Windows machine:
 
 ```text
 /plugin marketplace add Heknon/outlook-classic-mcp
 /plugin install outlook@outlook-classic-mcp
 ```
 
-Restart Claude Code (`/quit`, then reopen). On first call, `uvx` fetches and caches the package — a one-time pause of 10–30 seconds. Subsequent calls are instant.
+Then restart Claude Code. Nothing needs installing first: on the first session start the plugin's hook installs `uv` for the user if missing (no admin), and uv fetches Python and the dependencies into the plugin's data folder; if uv can't be installed it uses an existing Python 3.10+. This takes about a minute once. If the `outlook_*` tools aren't there in that first session, have the user run `/mcp` and reconnect `plugin:outlook:outlook`, or restart Claude Code.
 
 Confirm it works: `outlook_whoami` should return the bound mailbox.
+
+If setup fails, the reason is printed by the launcher (`scripts\launch-mcp.cmd`): usually no internet access to astral.sh / pypi.org. Options: set `HTTPS_PROXY`, install Python 3.10+ from python.org and set `OUTLOOK_MCP_RUNTIME=python` in `~/.claude/settings.json` → `"env"`, or use install path B.
 
 ### Updating later
 
@@ -47,8 +36,6 @@ Confirm it works: `outlook_whoami` should return the bound mailbox.
 /plugin marketplace update outlook-classic-mcp
 /plugin update outlook@outlook-classic-mcp
 ```
-
-To force `uvx` to pull the latest server code: `uv cache clean outlook-classic-mcp`.
 
 ## Install path B — from a clone (any MCP client)
 

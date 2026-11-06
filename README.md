@@ -43,25 +43,40 @@ server auto-launches Outlook on its first COM call.
 
 ### Option 1 — Claude Code plugin (recommended)
 
-Installs the MCP server *and* the bundled [`outlook` skill](#agent-skill)
-in one step. The server is fetched and run on demand by `uvx` straight
-from this repository.
-
-Install [`uv`](https://docs.astral.sh/uv/) once if you don't have it
-(`git` must also be on PATH):
-
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-Open a fresh terminal so PATH refreshes, then in Claude Code:
+This repository is a Claude Code **plugin marketplace**. In Claude Code on
+the Windows machine with classic Outlook:
 
 ```text
 /plugin marketplace add Heknon/outlook-classic-mcp
 /plugin install outlook@outlook-classic-mcp
 ```
 
-Restart Claude Code and confirm with `outlook_whoami`.
+Restart Claude Code. That's all — nothing to install beforehand. The
+plugin brings:
+
+- the MCP server (all `outlook_*` tools),
+- the [`outlook` skill](#agent-skill) that teaches the agent how to use them,
+- a start-up hook that sets up the runtime the first time: it installs
+  [`uv`](https://docs.astral.sh/uv/) for your user if it's missing, and uv
+  downloads a suitable Python and the dependencies into the plugin's data
+  folder. No admin rights needed. If `uv` can't be downloaded (blocked by
+  the network or script policy), an installed Python 3.10+ is used
+  instead. Corporate TLS inspection is handled by trusting the Windows
+  certificate store.
+
+The first start takes a minute or so while this happens. If the Outlook
+tools don't show up in that first session, run `/mcp` and reconnect
+`plugin:outlook:outlook`, or restart Claude Code. Later starts are instant.
+Confirm with `outlook_whoami`.
+
+Updating: `/plugin marketplace update outlook-classic-mcp`, then
+`/plugin update outlook@outlook-classic-mcp`. Uninstalling the plugin
+removes its environment too.
+
+Settings go in `~/.claude/settings.json` under `"env"` (for example
+`"OUTLOOK_MCP_ALLOW_SEND": "1"`), see [Environment variables](#conventions).
+Launcher-only switches: `OUTLOOK_MCP_RUNTIME=python` (never use uv) and
+`OUTLOOK_MCP_NO_AUTO_INSTALL=1` (don't download uv).
 
 ### Option 2 — From a clone (any MCP client)
 
@@ -229,8 +244,9 @@ environment. `OUTLOOK_MCP_DRAFT_ONLY=1` always forces draft-only, even if
 sending is allowed elsewhere (useful for IT-managed configs).
 
 In Claude Code you can also gate individual tools. For example, in
-`.claude/settings.json` (tool names assume the server is registered as
-`outlook`; `/mcp` shows the real names):
+`.claude/settings.json` (tool names below are for a server registered
+manually as `outlook`; installed as the plugin they are
+`mcp__plugin_outlook_outlook__outlook_...` — `/mcp` shows the real names):
 
 ```json
 {

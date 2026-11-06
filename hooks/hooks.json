@@ -1,0 +1,23 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd.exe",
+            "args": [
+              "/d",
+              "/c",
+              "${CLAUDE_PLUGIN_ROOT}\\scripts\\launch-mcp.cmd",
+              "prepare",
+              "${CLAUDE_PLUGIN_DATA}"
+            ],
+            "timeout": 600
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -27,3 +27,58 @@ jobs:
 
       - name: Test
         run: python -m pytest -q
+
+  # The Claude Code plugin path on a clean Windows machine: the launcher must
+  # install uv (or fall back to Python), and the server must start through
+  # cmd.exe exactly as plugin.json starts it, within the 30 s MCP timeout.
+  plugin-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test client deps (for the MCP handshake only)
+        run: python -m pip install "mcp<=1.29"
+
+      - name: Launcher installs uv and prepares the environment
+        shell: cmd
+        run: |
+          where uv && echo uv was already on PATH (install path not exercised)
+          scripts\launch-mcp.cmd prepare "%RUNNER_TEMP%\plugin-data-uv"
+          if errorlevel 1 exit /b 1
+          if not exist "%USERPROFILE%\.local\bin\uv.exe" where uv || exit /b 1
+
+      - name: Server starts through the launcher (uv)
+        shell: cmd
+        run: python tests\plugin\check_launcher.py "%RUNNER_TEMP%\plugin-data-uv" 30
+
+      - name: Fallback without uv uses the installed Python
+        shell: cmd
+        env:
+          OUTLOOK_MCP_RUNTIME: python
+        run: |
+          scripts\launch-mcp.cmd prepare "%RUNNER_TEMP%\plugin-data-py"
+          if errorlevel 1 exit /b 1
+          if not exist "%RUNNER_TEMP%\plugin-data-py\pyvenv\Scripts\python.exe" exit /b 1
+          python tests\plugin\check_launcher.py "%RUNNER_TEMP%\plugin-data-py" 30
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install the plugin with Claude Code and connect to it
+        shell: pwsh
+        env:
+          PYTHONPATH: ${{ github.workspace }}\tests\e2e\fakewin
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude plugin validate .
+          claude plugin marketplace add $env:GITHUB_WORKSPACE
+          claude plugin install outlook@outlook-classic-mcp
+          claude plugin list
+          $out = claude mcp list 2>&1 | Out-String
+          Write-Output $out
+          if ($out -notmatch "plugin:outlook:outlook.*Connected") { throw "plugin MCP server did not connect" }

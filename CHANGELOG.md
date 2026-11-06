@@ -2,6 +2,14 @@
 
 ## 0.5.0
 
+- **Plugin installs everything itself.** `/plugin marketplace add
+  Heknon/outlook-classic-mcp` + `/plugin install outlook@outlook-classic-mcp`
+  is enough: `scripts/launch-mcp.cmd` installs uv per user if missing (or
+  falls back to an installed Python), builds the environment in the
+  plugin's persistent data folder, and starts the server from the plugin's
+  own files (no git, no PyPI package). A SessionStart hook prepares the
+  environment so the server starts within Claude Code's MCP timeout.
+  Windows CI installs the plugin with the Claude Code CLI and connects to it.
 - Search across mailboxes: `search_in` = `mailbox` / `archive` / `all`, or
   `mailboxes=[...]`, on `outlook_search_mails` and
   `outlook_search_mails_by_person`; every mail folder is searched, results
