@@ -253,6 +253,20 @@ JSON it writes so the format can be supported.
   moment. If Outlook makes a rule client-only (it runs only while
   Outlook is open), the result says so.
 
+### Attachments
+
+`get_mail` lists each attachment with its kind (pdf, word, powerpoint,
+excel, image, email, ...) and marks inline images (signature logos);
+links to SharePoint / OneDrive / file shares in the body are listed as
+`linked_files`. `save_attachments(entry_id)` saves the real files —
+by default to a per-message folder under
+`%LOCALAPPDATA%\outlook-mcp\attachments` (`OUTLOOK_MCP_ATTACHMENTS_DIR`
+overrides) — skipping inline images, saving attached emails as `.msg`,
+and returns each file's path. Claude then reads them with its own tools
+(in Claude Code, Read handles PDFs; Anthropic's document skills or a
+script handle Word, PowerPoint and Excel), and a saved path can be
+attached to a reply draft directly.
+
 ### Threads
 
 `get_thread(entry_id)` returns every message of a conversation in one
@@ -455,6 +469,7 @@ with `OUTLOOK_MCP_ALLOWED_PATHS` (`;`-separated), or set
 | `OUTLOOK_MCP_INTERNAL_DOMAINS` | Extra domains (comma-separated) treated as internal for forward rules. |
 | `OUTLOOK_MCP_ALLOWED_PATHS` | Extra folders for attachments / saved attachments. |
 | `OUTLOOK_MCP_ALLOW_ANY_PATH=1` | Disable the path sandbox. |
+| `OUTLOOK_MCP_ATTACHMENTS_DIR` | Where `save_attachments` puts files by default (default `%LOCALAPPDATA%\outlook-mcp\attachments`). |
 | `OUTLOOK_MCP_SIGNATURES_DIR` | Signatures folder, if not `%APPDATA%\Microsoft\Signatures`. |
 | `OUTLOOK_MCP_LOG` | Log level (`DEBUG`, `INFO`, ...). |
 

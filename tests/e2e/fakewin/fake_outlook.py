@@ -169,6 +169,11 @@ class PropertyAccessor:
     def SetProperty(self, name, value):
         self.props[name] = value
 
+    def GetProperty(self, name):
+        if name in self.props:
+            return self.props[name]
+        raise Exception("The property cannot be found.")
+
 
 class Attachment:
     def __init__(self, path, display=None):
@@ -1084,6 +1089,23 @@ class Application:
         self._gal.append(ExchangeUser("Acme Billing", "billing@acme-supplies.com", "", "", ""))
         mail("Invoice 1042", "Acme Billing", 5)
         mail("Invoice 1043", "Acme Billing", 4)
+
+        # A mail with a real PDF, an inline signature logo and a SharePoint link.
+        import tempfile
+
+        files = tempfile.mkdtemp(prefix="fake-outlook-att-")
+        pdf = os.path.join(files, "Contract v3.pdf")
+        with open(pdf, "wb") as fh:
+            fh.write(b"%PDF-1.7 fake contract")
+        logo = os.path.join(files, "image001.png")
+        with open(logo, "wb") as fh:
+            fh.write(b"\x89PNG logo")
+        contract = mail("Contract draft", "Yossi Mizrahi", 6,
+                        body="Attached. Background: https://contoso.sharepoint.com/:w:/r/sites/Legal/Terms.docx")
+        contract.Attachments.Add(pdf)
+        inline = contract.Attachments.Add(logo)
+        inline.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x7FFE000B", True)
+        inline.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x3712001F", "image001@x")
 
         # Inbox-zero buckets and the user's Quick Steps (hidden, as XML).
         def subfolder(parent, name):

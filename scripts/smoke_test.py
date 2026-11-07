@@ -353,6 +353,31 @@ def main() -> int:
         return (f"{out['folder']} (via {out['folder_found_by']}): {out['answered_count']} answered, "
                 f"{out['still_waiting_count']} still waiting")
 
+    @check("save attachments of a recent mail")
+    def t_attachments():
+        import shutil
+
+        items = ns.GetDefaultFolder(6).Items
+        items.Sort("[ReceivedTime]", True)
+        target = None
+        for n, it in enumerate(items):
+            if n > 200:
+                break
+            info = mail._mail_full(it, include_body=False)
+            if info.get("file_attachment_count"):
+                target = it
+                break
+        if target is None:
+            return "SKIP: no recent Inbox mail with a file attachment"
+        out = mail.save_attachments(outlook, ns, entry_id=target.EntryID)
+        try:
+            assert out["count"] >= 1 and all(os.path.isfile(f["path"]) for f in out["files"]), out
+            kinds = ", ".join(f"{f['filename']} [{f['kind']}]" for f in out["files"])
+            skipped = len(out.get("skipped", []))
+            return f"{kinds}; {skipped} skipped (inline/links)"
+        finally:
+            shutil.rmtree(out["output_dir"], ignore_errors=True)
+
     @check("signatures")
     def t_sigs():
         out = mail.list_signatures_info(outlook, ns)
@@ -361,7 +386,7 @@ def main() -> int:
     for t in (t_whoami, t_list, t_since, t_reply_draft, t_thread, t_hebrew, t_send_refused, t_event,
               t_list_events, t_fb_me, t_find_me, t_colleague, t_shared, t_ctrlk,
               t_by_person, t_mailboxes, t_search_all, t_search_archive, t_category, t_rule, t_quick_steps,
-              t_waiting, t_sigs):
+              t_waiting, t_attachments, t_sigs):
         t()
 
     if not args.keep:

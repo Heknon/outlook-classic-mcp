@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ntpath
 import re
 import os
 from typing import Any
@@ -47,6 +46,13 @@ from outlook_mcp.utils.paths import validate_attachment_path, validate_output_di
 from outlook_mcp.utils.policy import DRAFT_ONLY_NOTE, draft_only
 from outlook_mcp.utils.safety import safe_dasl
 from outlook_mcp.utils.quoting import split_quoted
+from outlook_mcp.utils.attachments import (
+    default_attachment_root,
+    folder_slug,
+    kind_of,
+    linked_files,
+    safe_filename,
+)
 from outlook_mcp.utils.signatures import (
     Signature,
     default_signature_name,
@@ -54,10 +60,6 @@ from outlook_mcp.utils.signatures import (
     load_signature,
     signatures_dir,
 )
-
-WINDOWS_RESERVED_DEVICE_NAMES = {"CON", "PRN", "AUX", "NUL", "CLOCK$"} | {
-    f"COM{i}" for i in range(1, 10)
-} | {f"LPT{i}" for i in range(1, 10)}
 
 # PR_SENDER_SMTP_ADDRESS — unlike urn:schemas:httpmail:fromemail, this
 # holds the real SMTP address even for Exchange senders (whose fromemail
@@ -154,20 +156,20 @@ def _mail_full(
         raw_attachments = _safe_get(item, "Attachments")
         if raw_attachments:
             for i, att in enumerate(raw_attachments, start=1):
-                attachments.append(
-                    {
-                        "index": i,
-                        "filename": _attachment_name(att, i),
-                        "size_bytes": _safe_get(att, "Size"),
-                    }
-                )
+                attachments.append(_attachment_info(att, i))
         result["attachments"] = attachments
         result["attachment_count"] = len(attachments)
+        result["file_attachment_count"] = sum(
+            1 for a in attachments if not a["inline"] and a["type"] in ("file", "embedded_message")
+        )
     else:
         # Skip Attachments entirely (not even .Count) so callers that
         # don't need attachments (bulk summarizing/searching) never pay
         # for the riskiest COM traffic in this call.
         result["attachments"] = None
+    links = linked_files(_safe_get(item, "Body", "") or "")
+    if links:
+        result["linked_files"] = links
     if include_body:
         body = _safe_get(item, "Body", "") or ""
         if max_body_chars and len(body) > max_body_chars:
@@ -936,73 +938,145 @@ def mark_mail(
     }
 
 
+_ATT_TYPES = {1: "file", 4: "link", 5: "embedded_message", 6: "ole_object", 7: "cloud_link"}
+
+
+def _same_file(a: str, b: str) -> bool:
+    if os.path.getsize(a) != os.path.getsize(b):
+        return False
+    with open(a, "rb") as fa, open(b, "rb") as fb:
+        while True:
+            ca, cb = fa.read(1 << 16), fb.read(1 << 16)
+            if ca != cb:
+                return False
+            if not ca:
+                return True
+
+
+def _place_file(tmp: str, out_dir: str, name: str) -> str:
+    """Move ``tmp`` to ``name`` in ``out_dir``: reuse an identical existing
+    file, otherwise pick the first free "name (n).ext"."""
+    base, ext = os.path.splitext(name)
+    target = os.path.join(out_dir, name)
+    counter = 1
+    while os.path.exists(target):
+        if _same_file(tmp, target):
+            os.remove(tmp)
+            return target
+        target = os.path.join(out_dir, f"{base} ({counter}){ext}")
+        counter += 1
+    os.replace(tmp, target)
+    return target
+
+
+def _attachment_info(att: Any, index: int) -> dict[str, Any]:
+    name = str(_attachment_name(att, index))
+    att_type = _safe_get(att, "Type", 1)
+    info = {
+        "index": index,
+        "filename": name,
+        "size_bytes": _safe_get(att, "Size"),
+        "kind": kind_of(name) if att_type != 5 else "email",
+        "type": _ATT_TYPES.get(att_type, str(att_type)),
+        "inline": False,
+    }
+    pa = _safe_get(att, "PropertyAccessor")
+    if pa is not None:
+        try:
+            hidden = bool(pa.GetProperty(PR_ATTACHMENT_HIDDEN))
+        except Exception:
+            hidden = False
+        try:
+            cid = pa.GetProperty(PR_ATTACH_CONTENT_ID)
+        except Exception:
+            cid = None
+        # Inline images (signature logos, pictures in the body) are hidden
+        # attachments referenced by content-id.
+        info["inline"] = hidden or (bool(cid) and info["kind"] == "image")
+    if att_type in (4, 7):
+        link = _safe_get(att, "PathName")
+        if link:
+            info["link"] = link
+    return info
+
+
 def save_attachments(
     outlook: Any,
     namespace: Any,
     *,
     entry_id: str,
-    output_dir: str,
+    output_dir: str | None = None,
     attachment_index: int | None = None,
+    attachment_indexes: list[int] | None = None,
+    include_inline: bool = False,
 ) -> dict[str, Any]:
+    """Save attachments to disk and say where each one went.
+
+    Default folder: %LOCALAPPDATA%\\outlook-mcp\\attachments\\<date subject>.
+    Inline images are skipped unless asked for (by index or include_inline).
+    """
     item = get_item_by_id(namespace, entry_id)
-    out_dir = validate_output_dir(output_dir)
-    saved: list[str] = []
-    attachments = list(item.Attachments)
+    if output_dir:
+        out_dir = validate_output_dir(output_dir)
+    else:
+        received = _safe_get(item, "ReceivedTime") or _safe_get(item, "SentOn")
+        day = f"{received.year:04d}-{received.month:02d}-{received.day:02d} " if hasattr(received, "year") else ""
+        target = default_attachment_root() / folder_slug(day + str(_safe_get(item, "Subject", "") or ""))
+        target.mkdir(parents=True, exist_ok=True)
+        out_dir = str(target.resolve())
+
+    all_atts = list(_safe_get(item, "Attachments") or [])
+    wanted = set(attachment_indexes or [])
     if attachment_index is not None:
-        if attachment_index < 1 or attachment_index > len(attachments):
+        wanted.add(attachment_index)
+    for i in wanted:
+        if i < 1 or i > len(all_atts):
             raise OutlookError(
-                f"attachment_index {attachment_index} out of range "
-                f"(message has {len(attachments)} attachments, 1-indexed)."
-            )
-        attachments = [attachments[attachment_index - 1]]
-
-    for att in attachments:
-        # Sender-controlled filename. Reject anything containing path
-        # separators, drive-letter prefixes, dot-only names, or reserved
-        # Windows device names. These are signals of a path-traversal
-        # attempt by the sender, not legitimate attachments.
-        raw = att.FileName or ""
-        if not raw or raw in (".", ".."):
-            raise OutlookError(f"Attachment has invalid filename: {raw!r}")
-        if "\\" in raw or "/" in raw:
-            raise OutlookError(
-                f"Attachment filename contains path separators "
-                f"(rejected for safety): {raw!r}"
-            )
-        if ":" in raw:
-            raise OutlookError(
-                f"Attachment filename contains colon "
-                f"(rejected for safety): {raw!r}"
-            )
-        # Defense in depth: basename should be a no-op after the checks
-        # above, but use it anyway in case ntpath sees something we missed.
-        safe_name = ntpath.basename(raw)
-        if safe_name != raw:
-            raise OutlookError(
-                f"Attachment filename did not normalize cleanly: {raw!r}"
-            )
-        stem = safe_name.lstrip(".").split(".", 1)[0].upper()
-        if stem in WINDOWS_RESERVED_DEVICE_NAMES:
-            raise OutlookError(
-                f"Attachment has reserved Windows device name: {safe_name!r}"
+                f"attachment_index {i} out of range (message has {len(all_atts)} attachments, 1-indexed)."
             )
 
-        # Mails often carry several attachments with the same name (e.g.
-        # multiple inline "image.png") — uniquify instead of overwriting.
-        target = os.path.join(out_dir, safe_name)
-        base, ext = os.path.splitext(safe_name)
-        counter = 1
-        while os.path.exists(target):
-            target = os.path.join(out_dir, f"{base} ({counter}){ext}")
-            counter += 1
-        att.SaveAsFile(target)
-        saved.append(target)
-    return {
-        "status": "saved",
-        "count": len(saved),
-        "files": saved,
-        "output_dir": out_dir,
-    }
+    saved: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for i, att in enumerate(all_atts, start=1):
+        if wanted and i not in wanted:
+            continue
+        info = _attachment_info(att, i)
+        if info["inline"] and not (include_inline or i in wanted):
+            skipped.append({"index": i, "filename": info["filename"], "reason": "inline image"})
+            continue
+        if info["type"] in ("link", "cloud_link", "ole_object"):
+            reason = "link to a file stored elsewhere" if info["type"] != "ole_object" else "embedded object, not a file"
+            skipped.append({"index": i, "filename": info["filename"], "reason": reason, **({"link": info["link"]} if info.get("link") else {})})
+            continue
+        fallback = f"attachment-{i}"
+        name = safe_filename(info["filename"], fallback)
+        if info["type"] == "embedded_message" and not name.lower().endswith((".msg", ".eml")):
+            name += ".msg"
+        # Save to a temporary name first: if an identical file is already
+        # there (the same attachment saved before), reuse it instead of
+        # piling up "name (1).pdf" copies; a different file with the same
+        # name gets a numbered name.
+        tmp = os.path.join(out_dir, f".saving-{os.getpid()}-{i}.part")
+        try:
+            att.SaveAsFile(tmp)
+        except Exception as exc:  # noqa: BLE001 - one bad attachment shouldn't stop the rest
+            skipped.append({"index": i, "filename": info["filename"], "reason": f"could not save: {exc}"})
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            continue
+        target = _place_file(tmp, out_dir, name)
+        size = os.path.getsize(target)
+        saved.append({"index": i, "filename": os.path.basename(target), "path": target,
+                      "kind": info["kind"], "size_bytes": size})
+
+    out: dict[str, Any] = {"status": "saved", "count": len(saved), "files": saved, "output_dir": out_dir}
+    if skipped:
+        out["skipped"] = skipped
+    links = linked_files(_safe_get(item, "Body", "") or "")
+    if links:
+        out["linked_files"] = links
+        out["note"] = "The message links to files stored elsewhere (listed in linked_files); they aren't attachments."
+    return out
 
 
 # PR_SENDER_SMTP_ADDRESS (the sender) — SMTP_PROPTAG above is the

@@ -96,7 +96,7 @@ Fetch the body, all headers, and the attachment manifest for one mail. Read-only
 
 **Returns**: `{ entry_id, conversation_id, subject, from, from_address, to, cc, bcc, received, sent, unread, importance, categories, attachments: [{index, filename, size_bytes}], body }` plus `body_truncated`/`body_total_chars` when the cap was hit (re-call with a higher `max_body_chars` to read more) and `html_body` when `include_html=true`.
 
-`attachments[].index` is **1-indexed**; pass it to `save_attachments` to save a single file.
+`attachments[].index` is **1-indexed**; pass it to `save_attachments` to save a single file. Each attachment has `filename, size_bytes, kind, type` (file / embedded_message / link / cloud_link / ole_object) and `inline` (signature logos and body pictures). `file_attachment_count` counts real files; `linked_files` lists SharePoint/OneDrive/file-share links found in the body.
 
 ### `outlook_get_thread`
 
@@ -226,15 +226,19 @@ Toggle read state and/or follow-up flag.
 
 ### `outlook_save_attachments`
 
-Save one or all attachments from a mail to a local directory.
+Save a mail's attachments to disk so they can be read with your own file tools (Claude Code's Read handles PDFs; use document skills or a script for Word/PowerPoint/Excel).
 
-| Param              | Type    | Default | Notes |
-| ------------------ | ------- | ------- | ----- |
-| `entry_id`         | string  | required | |
-| `output_dir`       | string  | required | Absolute path under user profile. Created if missing. |
-| `attachment_index` | int ≥1  | `null`  | 1-indexed. Omit to save all. |
+| Param              | Type      | Default | Notes |
+| ------------------ | --------- | ------- | ----- |
+| `entry_id`         | string    | required | |
+| `output_dir`       | string    | per-message folder under `%LOCALAPPDATA%\outlook-mcp\attachments` | Absolute path under the user profile if given. |
+| `attachment_index` | int ≥1    | `null`  | One attachment (1-indexed, as in `get_mail`). |
+| `attachment_indexes` | list[int] | `null` | Several. Omit both to save all files. |
+| `include_inline`   | bool      | `false` | Also save inline images (signature logos, pictures in the body). |
 
-**Returns**: `{ status: "saved", count, files: [absolute paths], output_dir }`.
+**Returns**: `{ status, count, files: [{index, filename, path, kind, size_bytes}], output_dir, skipped?: [{index, filename, reason}], linked_files?, note? }`. `kind`: pdf, word, powerpoint, excel, text, image, email, archive, calendar, contact, other. Embedded emails are saved as `.msg`. Invalid characters in names become `_` (paths can't escape the folder); saving the same attachment again reuses the identical file; a different file with the same name gets ` (1)`. Links to SharePoint/OneDrive/file shares in the body are listed in `linked_files` — they're not attachments.
+
+The saved `path` can be passed straight to `attachments=` of `send_mail` / `reply_mail` / `forward_mail`.
 
 ---
 

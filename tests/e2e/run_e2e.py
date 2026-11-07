@@ -29,6 +29,16 @@ ROOT = HERE.parents[1]
 TZ = os.environ.get("E2E_TZ", "Asia/Jerusalem")
 
 
+_ATT_DIR: list[str] = []
+
+
+def _attachments_dir() -> str:
+    """A fresh attachments folder per run (inside the e2e 'user profile')."""
+    if not _ATT_DIR:
+        _ATT_DIR.append(tempfile.mkdtemp(prefix="outlook-mcp-e2e-att-", dir=tempfile.gettempdir()))
+    return _ATT_DIR[0]
+
+
 def server_params(extra_env: dict[str, str] | None = None) -> StdioServerParameters:
     env = {
         "PYTHONPATH": os.pathsep.join([str(HERE / "fakewin"), str(ROOT / "src")]),
@@ -38,6 +48,7 @@ def server_params(extra_env: dict[str, str] | None = None) -> StdioServerParamet
         "HOME": os.environ.get("HOME", tempfile.gettempdir()),
         "USERPROFILE": tempfile.gettempdir(),
         "OUTLOOK_MCP_SIGNATURES_DIR": str(HERE / "signatures"),
+        "OUTLOOK_MCP_ATTACHMENTS_DIR": _attachments_dir(),
         **(extra_env or {}),
     }
     if sys.platform == "win32":
@@ -561,6 +572,33 @@ async def scenario_draft_only(r: Run):
     ]:
         await r.check(name, fn())
 
+    async def t_attachment_details():
+        found = await r.call("outlook_search_mails", query="Contract draft", scope="subject")
+        m = await r.call("outlook_get_mail", entry_id=found["items"][0]["entry_id"])
+        got = [(a["filename"], a["kind"], a["inline"]) for a in m["attachments"]]
+        assert got == [("Contract v3.pdf", "pdf", False), ("image001.png", "image", True)], got
+        assert m["file_attachment_count"] == 1
+        assert m["linked_files"] == ["https://contoso.sharepoint.com/:w:/r/sites/Legal/Terms.docx"], m.get("linked_files")
+        r.state["contract"] = found["items"][0]["entry_id"]
+        return "PDF + inline logo + SharePoint link told apart"
+
+    async def t_save_and_reply_with_it():
+        out = await r.call("outlook_save_attachments", entry_id=r.state["contract"])
+        assert [f["filename"] for f in out["files"]] == ["Contract v3.pdf"], out
+        path = out["files"][0]["path"]
+        assert os.path.isfile(path) and open(path, "rb").read().startswith(b"%PDF"), path
+        assert "Contract draft" in out["output_dir"] and out["skipped"][0]["reason"] == "inline image"
+        reply = await r.call("outlook_reply_mail", entry_id=r.state["contract"],
+                             body="Reviewed, comments inline.", attachments=[path])
+        draft = await r.call("outlook_get_mail", entry_id=reply["entry_id"])
+        assert [a["filename"] for a in draft["attachments"]] == ["Contract v3.pdf"], draft["attachments"]
+        return f"saved to {os.path.basename(out['output_dir'])}/, re-attached to a reply draft"
+
+    for name, fn in [
+        ("attachment details", t_attachment_details), ("save attachment, reply with it", t_save_and_reply_with_it),
+    ]:
+        await r.check(name, fn())
+
     for name, fn in [
         ("whole thread in one call", t_thread), ("thread with full bodies", t_thread_full),
         ("Hebrew reply is right-to-left", t_hebrew_reply), ("Hebrew new mail is right-to-left", t_hebrew_new_mail),
@@ -695,6 +733,7 @@ async def scenario_send_enabled(r: Run):
 
 async def run_all() -> list[tuple[str, str, str]]:
     _TODAY.clear()  # recompute per run
+    _ATT_DIR.clear()
     results = []
     for label, env, scenario in [
         ("default (draft-only)", {}, scenario_draft_only),

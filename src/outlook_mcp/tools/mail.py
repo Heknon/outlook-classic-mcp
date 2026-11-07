@@ -536,7 +536,7 @@ def register(mcp, bridge) -> None:
     @mcp.tool(
         name="outlook_save_attachments",
         annotations={
-            "title": "Save Outlook mail attachments to disk",
+            "title": "Save mail attachments to disk (returns file paths)",
             "readOnlyHint": False,
             "destructiveHint": False,
             "idempotentHint": True,
@@ -546,16 +546,31 @@ def register(mcp, bridge) -> None:
     @safe_call
     async def outlook_save_attachments(
         entry_id: Annotated[str, Field(description="EntryID of the mail.")],
-        output_dir: Annotated[str, Field(description="Absolute directory under your user profile.")],
-        attachment_index: Annotated[
-            Optional[int], Field(ge=1, description="1-indexed attachment. Omit to save all.")
+        output_dir: Annotated[
+            Optional[str],
+            Field(description="Absolute folder under your user profile. Default: a per-message folder under %LOCALAPPDATA%\\outlook-mcp\\attachments."),
         ] = None,
+        attachment_index: Annotated[
+            Optional[int], Field(ge=1, description="One attachment (1-indexed, as in outlook_get_mail). Omit to save all files.")
+        ] = None,
+        attachment_indexes: Annotated[Optional[list[int]], Field(description="Several attachments by index.")] = None,
+        include_inline: Annotated[
+            bool, Field(description="Also save inline images (signature logos, pictures in the body).")
+        ] = False,
     ) -> str:
-        """Save one or all attachments from a mail to a local directory."""
+        """Save a mail's attachments to disk and return each file's full path,
+        kind (pdf/word/powerpoint/excel/image/email/...) and size.
+
+        Read the saved files with your own file tools (e.g. Read for PDFs).
+        Inline images are skipped by default; links to SharePoint/OneDrive/
+        file shares in the body are listed under linked_files.
+        """
         data = await bridge.call(
             mail_client.save_attachments,
             entry_id=entry_id,
             output_dir=output_dir,
             attachment_index=attachment_index,
+            attachment_indexes=attachment_indexes,
+            include_inline=include_inline,
         )
         return format_response(data, "json")

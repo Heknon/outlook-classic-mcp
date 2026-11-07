@@ -2,6 +2,12 @@
 
 ## 0.5.0
 
+- Attachments: `save_attachments` saves to a per-message folder by default,
+  skips inline images (signature logos), saves attached emails as `.msg`,
+  fixes invalid file names instead of failing, reports per-attachment
+  failures, and returns path/kind/size per file. `get_mail` gives each
+  attachment's kind/type/inline flag and lists SharePoint/OneDrive/file-share
+  links in the body (`linked_files`).
 - Inbox zero: `outlook_list_quick_steps` / `outlook_run_quick_step` read the
   user's Quick Steps from the mailbox (hidden configuration folder, XML)
   and carry out safe actions; `outlook_move_mails` (bulk);
