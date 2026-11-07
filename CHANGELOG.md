@@ -2,6 +2,11 @@
 
 ## 0.5.0
 
+- Calendar history and analytics: `outlook_list_events` pages through past
+  ranges (`offset`/`next_offset`, `compact`, `include_attendees`, up to
+  1000 per call); new `outlook_calendar_stats` computes routine/load/
+  recurring/people patterns over a period (calendar access, else
+  free/busy); private appointments counted but never named.
 - Meeting titles where you have access: `outlook_get_free_busy` and
   `outlook_find_meeting_times` include colleagues' meeting titles/locations
   when their calendar is shared with you (`access: "calendar"`), busy/free

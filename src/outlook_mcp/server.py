@@ -43,7 +43,9 @@ Tool categories (all prefixed `outlook_`):
     of those mailboxes, not just one folder.
   - Calendar: list_events (also a colleague's shared calendar via mailbox=),
     get_event, create_event, update_event, delete_event, respond_event,
-    get_free_busy (anyone in the org), find_meeting_times (scheduling assistant)
+    get_free_busy (anyone in the org), find_meeting_times (scheduling assistant),
+    calendar_stats (patterns over weeks/months: routine, load, recurring
+    meetings, who someone meets most); list_events also works on past ranges
   - Contacts: list_contacts, search_contacts (incl. org directory/GAL),
     get_contact, resolve_name (like Ctrl+K: name -> address, or candidates
     to ask the user about when ambiguous)

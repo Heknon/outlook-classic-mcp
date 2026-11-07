@@ -152,7 +152,7 @@ async def scenario_draft_only(r: Run):
             "outlook_list_mailboxes", "outlook_get_thread", "outlook_create_rule", "outlook_run_rule",
             "outlook_delete_rule", "outlook_create_category", "outlook_update_category",
             "outlook_delete_category", "outlook_list_quick_steps", "outlook_run_quick_step",
-            "outlook_move_mails", "outlook_check_waiting",
+            "outlook_move_mails", "outlook_check_waiting", "outlook_calendar_stats",
         }
         assert expected <= tools, expected - tools
         return f"{len(tools)} tools"
@@ -607,6 +607,49 @@ async def scenario_draft_only(r: Run):
 
     for name, fn in [
         ("attachment details", t_attachment_details), ("save attachment, reply with it", t_save_and_reply_with_it),
+    ]:
+        await r.check(name, fn())
+
+    async def t_calendar_stats():
+        out = await r.call("outlook_calendar_stats", mailbox="Dana Levi")
+        assert out["access"] == "calendar", out
+        rec = {x["title"]: x for x in out["recurring_meetings"]}
+        assert rec["Product standup"]["usual_time"] == "09:30" and rec["Product standup"]["occurrences"] >= 38, rec
+        assert rec["1:1 Dana / Yossi"]["usual_days"] == ["mon"] and rec["Roadmap review"]["usual_days"] == ["wed"]
+        assert out["top_one_on_ones"][0]["name"] == "Yossi Mizrahi", out["top_one_on_ones"]
+        assert out["private_appointments"] == 8 and "Pilates" not in json.dumps(out), "private leaked"
+        days = {d["day"] for d in out["by_weekday"]}
+        assert days == {"sun", "mon", "tue", "wed", "thu"}, days
+        assert out["typical_day"]["first_meeting_starts"] in ("07:30", "09:30"), out["typical_day"]
+        return f"{out['meetings']} meetings/8 wks; standup 09:30 daily, 1:1 Mon, roadmap Wed; private counted not named"
+
+    async def t_history_paging():
+        rng = dict(mailbox="Dana Levi", start=local(-56, "00:00"), end=local(0, "00:00"), compact=True)
+        first = await r.call("outlook_list_events", limit=25, **rng)
+        assert first["truncated"] and first["next_offset"] == 25, (first["count"], first["truncated"])
+        seen = [i["start"] + i["subject"] for i in first["items"]]
+        offset = first["next_offset"]
+        while offset is not None:
+            page = await r.call("outlook_list_events", limit=25, offset=offset, **rng)
+            seen += [i["start"] + i["subject"] for i in page["items"]]
+            offset = page["next_offset"]
+        assert len(seen) == len(set(seen)), "duplicates across pages"
+        stats = await r.call("outlook_calendar_stats", mailbox="Dana Levi",
+                             start=local(-56, "00:00"), end=local(0, "00:00"))
+        assert len(seen) == stats["meetings"] + stats["all_day_events"], (len(seen), stats["meetings"])
+        assert "Pilates" not in json.dumps(seen)
+        with_people = await r.call("outlook_list_events", limit=3, include_attendees=True, **rng)
+        assert any(i.get("attendees") for i in with_people["items"]), with_people["items"]
+        return f"{len(seen)} past events over pages, no duplicates, matches stats"
+
+    async def t_stats_free_busy_only():
+        out = await r.call("outlook_calendar_stats", mailbox="Yossi", start=local(1, "00:00"), end=local(3, "00:00"))
+        assert out["access"] == "free_busy_only" and out["meetings"] >= 1 and not out["top_people"], out
+        return "unshared calendar: times only, with a note"
+
+    for name, fn in [
+        ("calendar patterns (לו״ז intelligence)", t_calendar_stats), ("calendar history paging", t_history_paging),
+        ("stats without calendar access", t_stats_free_busy_only),
     ]:
         await r.check(name, fn())
 

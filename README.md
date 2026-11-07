@@ -150,14 +150,14 @@ the server send, add `"env": { "OUTLOOK_MCP_ALLOW_SEND": "1" }` — see
 
 ## Tools
 
-48 tools across 10 categories, all prefixed `outlook_*`.
+49 tools across 10 categories, all prefixed `outlook_*`.
 
 | Category       | Tools |
 | -------------- | ----- |
 | Mail           | `list_mails`, `search_mails`, `search_mails_by_person`, `get_mail`, `get_thread`, `send_mail`, `reply_mail`, `forward_mail`, `send_draft`, `list_signatures`, `move_mail`, `delete_mail`, `mark_mail`, `save_attachments` |
 | Inbox zero     | `list_quick_steps`, `run_quick_step`, `move_mails`, `check_waiting` |
 | Folders        | `list_folders`, `create_folder`, `list_mailboxes` |
-| Calendar       | `list_events`, `get_event`, `create_event`, `update_event`, `delete_event`, `respond_event`, `get_free_busy`, `find_meeting_times` |
+| Calendar       | `list_events`, `get_event`, `create_event`, `update_event`, `delete_event`, `respond_event`, `get_free_busy`, `find_meeting_times`, `calendar_stats` |
 | Contacts       | `list_contacts`, `search_contacts` (saved contacts + org directory), `get_contact`, `resolve_name` (Ctrl+K: name → address, with candidates when ambiguous) |
 | Tasks          | `list_tasks`, `create_task`, `complete_task` |
 | Categories     | `list_categories`, `create_category`, `update_category`, `delete_category`, `set_category` |
@@ -312,6 +312,15 @@ own replies are included — with each reply's quoted history removed
   titles and locations; everyone else stays busy/free only (`access`
   says which). Private appointments always show as "Private
   appointment".
+- **Calendar history and patterns (לו״ז intelligence):** `list_events`
+  works on past ranges too (with paging, compact rows and attendees), and
+  `calendar_stats(mailbox, start, end)` summarizes someone's calendar
+  over weeks or months — meeting load per week / weekday / hour, typical
+  first and last meeting, recurring meetings with their usual day and
+  time, who they meet most (and 1:1s), organizers, busiest days. It works
+  on your calendar and calendars shared with you, and falls back to
+  free/busy times for others; private appointments are counted, never
+  named.
 - **Find a time:** `find_meeting_times(attendees=[...], duration_minutes=60)`
   returns slots when you and every required attendee are free, within
   working hours (`day_start`/`day_end`) and working days

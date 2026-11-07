@@ -90,7 +90,7 @@ Most read tools accept `response_format='markdown'` (default; pretty for the use
 ### Read tools are free; write tools have side effects
 
 Read freely:
-`list_mails`, `search_mails`, `search_mails_by_person`, `get_mail`, `get_thread`, `list_folders`, `list_events`, `get_event`, `list_contacts`, `search_contacts`, `get_contact`, `resolve_name`, `list_tasks`, `list_categories`, `list_rules`, `get_out_of_office`, `list_signatures`, `list_mailboxes`, `list_quick_steps`, `check_waiting`, `list_rules`, `list_categories`, `get_free_busy`, `find_meeting_times`, `whoami`.
+`list_mails`, `search_mails`, `search_mails_by_person`, `get_mail`, `get_thread`, `list_folders`, `list_events`, `get_event`, `list_contacts`, `search_contacts`, `get_contact`, `resolve_name`, `list_tasks`, `list_categories`, `list_rules`, `get_out_of_office`, `list_signatures`, `list_mailboxes`, `calendar_stats`, `list_quick_steps`, `check_waiting`, `list_rules`, `list_categories`, `get_free_busy`, `find_meeting_times`, `whoami`.
 
 Confirm before calling (these change shared state or send messages):
 `send_mail`, `reply_mail`, `forward_mail`, `send_draft`, `delete_mail`, `move_mail`, `mark_mail`, `save_attachments`, `create_event` (especially with attendees — that sends a meeting invite immediately), `update_event`, `delete_event`, `respond_event` (with `send_response=true`), `create_folder`, `create_task`, `complete_task`, `set_category`, `toggle_rule`.
@@ -158,6 +158,13 @@ Write Hebrew drafts as normal plain text in `body`; the server makes the paragra
 - "What's on Ann's calendar?" (meeting titles/details): `outlook_list_events(mailbox="ann@...")`. This needs Ann to have shared her calendar; if it fails, fall back to free/busy and say so.
 - `outlook_get_free_busy` and `outlook_find_meeting_times` already include meeting titles for people whose calendar is shared with the user (`access: "calendar"`); use them to explain conflicts ("Yossi is in 'Hiring loop' until 13:00"). For `free_busy_only` people say only that they're busy.
 - Never try to reveal what's behind "Private appointment".
+
+### Calendar history and patterns (לו״ז intelligence)
+
+- Past ranges work: `outlook_list_events(mailbox=..., start=<past>, end=<past>)`. Always pass `mailbox` when the question is about someone else.
+- For patterns over weeks or months (routine, meeting load, recurring meetings, who someone meets most, typical day), call `outlook_calendar_stats(mailbox=..., start, end)` first — its counts are exact, also for calendars too big to read in one call. Then use `outlook_list_events(..., compact=true, include_attendees=true)` (paging with `next_offset`) only for the details you need.
+- Without calendar access the stats fall back to free/busy (times only); say so.
+- Private appointments: report that a recurring private block exists and when, never what it is.
 
 ## Default workflow
 

@@ -58,12 +58,20 @@ def register(mcp, bridge) -> None:
     async def outlook_list_events(
         start: Annotated[Optional[str], Field(description="ISO-8601 start of range. Defaults to now.")] = None,
         end: Annotated[Optional[str], Field(description="ISO-8601 end of range. Defaults to start+14d.")] = None,
-        limit: Annotated[int, Field(ge=1, le=200)] = 50,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 50,
         include_recurrences: Annotated[bool, Field()] = True,
         mailbox: Annotated[Optional[str], Field(description=MAILBOX_DESC)] = None,
+        offset: Annotated[int, Field(ge=0, description="Skip this many (paging: pass next_offset).")] = 0,
+        compact: Annotated[
+            bool, Field(description="Shorter rows (time, subject, organizer, recurrence, categories) for long ranges.")
+        ] = False,
+        include_attendees: Annotated[bool, Field(description="Add each event's attendee names.")] = False,
         response_format: Annotated[str, Field(description="'markdown' or 'json'.")] = "markdown",
     ) -> CallToolResult:
         """List calendar events in a date range — yours, or a colleague's with `mailbox`.
+
+        Past ranges work (calendar history). For long ranges use compact=true
+        and page with offset/next_offset; for patterns use outlook_calendar_stats.
 
         Filters by overlap with [start, end), so multi-day/all-day events that
         started earlier are included. Response includes "truncated": true if
@@ -76,6 +84,9 @@ def register(mcp, bridge) -> None:
             limit=limit,
             include_recurrences=include_recurrences,
             mailbox=mailbox,
+            offset=offset,
+            compact=compact,
+            include_attendees=include_attendees,
         )
         return ui_result(format_response(data, response_format), data)
 
@@ -413,5 +424,34 @@ def register(mcp, bridge) -> None:
             max_results=max_results,
             max_per_day=max_per_day,
             include_titles=include_titles,
+        )
+        return format_response(data, "json")
+
+    @mcp.tool(
+        name="outlook_calendar_stats",
+        annotations={"title": "Calendar patterns over a period", **READ_ONLY},
+    )
+    @safe_call
+    async def outlook_calendar_stats(
+        mailbox: Annotated[
+            Optional[str],
+            Field(description="Whose calendar (address or name). Omit for your own."),
+        ] = None,
+        start: Annotated[Optional[str], Field(description="ISO-8601 start. Default: 8 weeks before end.")] = None,
+        end: Annotated[Optional[str], Field(description="ISO-8601 end. Default: now.")] = None,
+        max_events: Annotated[int, Field(ge=10, le=10000)] = 3000,
+    ) -> str:
+        """Patterns in a calendar over a period — the counting done for you.
+
+        Meeting load (per week, weekday, start hour), typical first/last
+        meeting of the day, recurring meetings with their usual day/time,
+        who they meet most (and 1:1s), organizers, categories, busiest days.
+        Works on your calendar and calendars shared with you; for others it
+        falls back to free/busy times only. Private appointments are counted
+        but never described. Use outlook_list_events to look at specific
+        meetings.
+        """
+        data = await bridge.call(
+            cal_client.calendar_stats, mailbox=mailbox, start=start, end=end, max_events=max_events
         )
         return format_response(data, "json")

@@ -27,6 +27,7 @@ from outlook_mcp.errors import OutlookError
 from outlook_mcp.schemas import Recurrence
 from outlook_mcp.utils.formatting import from_iso, to_com, to_dasl_date, to_iso, truncate
 from outlook_mcp.utils.policy import DRAFT_ONLY_NOTE, draft_only
+from outlook_mcp.utils.calendar_stats import analyze_events
 from outlook_mcp.utils.scheduling import (
     FreeBusy,
     busy_blocks,
@@ -172,22 +173,64 @@ def list_events(
     limit: int = 50,
     include_recurrences: bool = True,
     mailbox: str | None = None,
+    offset: int = 0,
+    compact: bool = False,
+    include_attendees: bool = False,
 ) -> dict[str, Any]:
+    """Events overlapping [start, end) — past ranges work too (history)."""
     cal, owner = calendar_folder(namespace, mailbox)
     start_dt = from_iso(start) or dt.datetime.now()
     end_dt = from_iso(end) or (start_dt + dt.timedelta(days=14))
-    found, truncated = _events_between(cal, start_dt, end_dt, limit, include_recurrences)
-    results = [_event_summary(ev) for ev in found]
-    if owner:
-        results = [_mask_private(r, ev) for r, ev in zip(results, found)]
+    if end_dt <= start_dt:
+        raise OutlookError("end must be after start.")
+    found, truncated = _events_between(cal, start_dt, end_dt, offset + limit, include_recurrences)
+    page = found[offset:]
+    results = []
+    for ev in page:
+        row = _compact_event(ev) if compact else _event_summary(ev)
+        if include_attendees:
+            row["attendees"] = _attendee_names(ev)
+        if owner:
+            row = _mask_private(row, ev)
+        results.append(row)
     return {
         "start": start_dt.isoformat(),
         "end": end_dt.isoformat(),
         "count": len(results),
+        "offset": offset,
         "items": results,
         "truncated": truncated,
+        "next_offset": offset + len(results) if truncated else None,
         **({"mailbox": owner} if owner else {}),
     }
+
+
+def _attendee_names(ev: Any) -> list[str]:
+    names = []
+    recips = _safe_get(ev, "Recipients")
+    for r in list(recips or []):
+        n = _safe_get(r, "Name")
+        if n:
+            names.append(str(n))
+    return names
+
+
+def _compact_event(ev: Any) -> dict[str, Any]:
+    recur_state = _safe_get(ev, "RecurrenceState", 0)
+    row = {
+        "entry_id": _safe_get(ev, "EntryID"),
+        "start": to_iso(_safe_get(ev, "Start")),
+        "end": to_iso(_safe_get(ev, "End")),
+        "subject": _safe_get(ev, "Subject", ""),
+        "organizer": _safe_get(ev, "Organizer", ""),
+        "recurrence": _RECURRENCE_STATE_NAMES.get(recur_state, "none"),
+    }
+    if _safe_get(ev, "AllDayEvent", False):
+        row["all_day"] = True
+    cats = _safe_get(ev, "Categories", "")
+    if cats:
+        row["categories"] = cats
+    return row
 
 
 # OlSensitivity
@@ -204,6 +247,84 @@ def _mask_private(row: dict[str, Any], ev: Any) -> dict[str, Any]:
             "private": True,
         }
     return row
+
+
+def _stat_row(ev: Any, mask_private: bool) -> dict[str, Any] | None:
+    s, e = _as_naive(_safe_get(ev, "Start")), _as_naive(_safe_get(ev, "End"))
+    if s is None or e is None:
+        return None
+    private = mask_private and _safe_get(ev, "Sensitivity", 0) == _PRIVATE
+    cats = str(_safe_get(ev, "Categories", "") or "")
+    return {
+        "start": s,
+        "end": e,
+        "subject": "" if private else str(_safe_get(ev, "Subject", "") or ""),
+        "organizer": "" if private else str(_safe_get(ev, "Organizer", "") or ""),
+        "attendees": [] if private else _attendee_names(ev),
+        "recurring": _safe_get(ev, "RecurrenceState", 0) in (1, 2, 3) or bool(_safe_get(ev, "IsRecurring", False)),
+        "private": private,
+        "all_day": bool(_safe_get(ev, "AllDayEvent", False)),
+        "categories": [c.strip() for c in cats.replace(";", ",").split(",") if c.strip()],
+        "busy": _BUSY_NAMES.get(_safe_get(ev, "BusyStatus", 2), "busy"),
+    }
+
+
+def calendar_stats(
+    outlook: Any,
+    namespace: Any,
+    *,
+    mailbox: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    max_events: int = 3000,
+) -> dict[str, Any]:
+    """Patterns in someone's calendar over a period (default: last 8 weeks).
+
+    Uses the calendar itself when it's yours or shared with you; otherwise
+    falls back to free/busy (times only — no titles or people).
+    """
+    now = dt.datetime.now().replace(second=0, microsecond=0)
+    end_dt = from_iso(end) or now
+    start_dt = from_iso(start) or (end_dt - dt.timedelta(weeks=8))
+    if end_dt <= start_dt:
+        raise OutlookError("end must be after start.")
+    if (end_dt - start_dt).days > 400:
+        raise OutlookError("Range too long: use at most about a year.")
+    if mailbox:
+        recip = resolve_recipient(namespace, mailbox)
+        owner = str(_safe_get(recip, "Name", mailbox))
+        try:
+            cal = namespace.GetSharedDefaultFolder(recip, OL_FOLDER_CALENDAR)
+        except Exception:
+            cal = None
+    else:
+        recip = _safe_get(namespace, "CurrentUser")
+        owner = str(_safe_get(recip, "Name", "") or "me")
+        cal = namespace.GetDefaultFolder(OL_FOLDER_CALENDAR)
+
+    if cal is not None:
+        found, truncated = _events_between(cal, start_dt, end_dt, max_events)
+        rows = [r for r in (_stat_row(ev, mask_private=bool(mailbox)) for ev in found) if r]
+        out = analyze_events(rows, owner=owner, start=start_dt, end=end_dt)
+        out["access"] = "calendar"
+        if truncated:
+            out["truncated"] = True
+            out["note"] = f"Stopped at {max_events} events; shorten the range for complete numbers."
+        return out
+
+    # Free/busy only: busy blocks become untitled "events".
+    fb = _fetch_free_busy(recip, start_dt, 30)
+    blocks = busy_blocks(fb, start_dt, end_dt)
+    rows = [{"start": b["start"], "end": b["end"], "busy": b["status"]} for b in blocks
+            if b["status"] in ("busy", "tentative", "out_of_office")]
+    out = analyze_events(rows, owner=owner, start=start_dt, end=end_dt)
+    out["access"] = "free_busy_only"
+    out["note"] = (
+        f"{owner}'s calendar isn't shared with you, so only busy times are known (no titles, "
+        "people or recurring meetings). Exchange publishes limited past free/busy, so older "
+        "weeks may show as empty."
+    )
+    return out
 
 
 def _meetings_for(namespace: Any, recip: Any, start_dt: dt.datetime, end_dt: dt.datetime,

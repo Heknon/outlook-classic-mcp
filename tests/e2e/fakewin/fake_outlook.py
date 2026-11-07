@@ -1284,6 +1284,41 @@ class Application:
             "Personal": [old_mail("Wedding budget", "Yossi Mizrahi", 2000)],
         })
 
+        # Eight weeks of Dana's history (Sunday-Thursday week), for calendar analytics.
+        def past(smtp, when, minutes, subject, attendees=(), recurring=True, private=False, organizer=None):
+            ap = AppointmentItem(self, Subject=subject, BusyStatus=2)
+            ap._start = when
+            ap._end = when + dt.timedelta(minutes=minutes)
+            ap._owner = smtp
+            ap.Organizer = organizer or next((u.Name for u in self._gal if u.PrimarySmtpAddress == smtp), smtp)
+            ap.RecurrenceState = 2 if recurring else 0
+            ap.IsRecurring = recurring
+            ap.MeetingStatus = 1 if attendees else 0
+            ap.Sensitivity = 2 if private else 0
+            for name in attendees:
+                ap.Recipients.Add(name).Type = 1
+            self._calendars.setdefault(smtp, []).append(ap)
+            return ap
+
+        dana = "dana.levi@contoso.com"
+        for back in range(56, 0, -1):
+            day = today - dt.timedelta(days=back)
+            wd = day.weekday()  # Mon=0 ... Sun=6
+            if wd in (4, 5):  # Friday, Saturday off
+                continue
+            past(dana, day + dt.timedelta(hours=9, minutes=30), 15, "Product standup",
+                 ("Yossi Mizrahi", "Dana Cohen"))
+            if wd == 0:
+                past(dana, day + dt.timedelta(hours=11), 30, "1:1 Dana / Yossi", ("Yossi Mizrahi",))
+            if wd == 2:
+                past(dana, day + dt.timedelta(hours=14), 60, "Roadmap review",
+                     ("Ori Harel", "Yossi Mizrahi", "Dana Cohen"))
+            if wd == 1 and (back // 7) % 2 == 0:
+                past(dana, day + dt.timedelta(hours=16), 45, "Customer call - Acme",
+                     ("billing@acme-supplies.com",), recurring=False)
+            if wd == 3:
+                past(dana, day + dt.timedelta(hours=7, minutes=30), 60, "Pilates", private=True)
+
         shared = Folder(self, "Calendar", 9, 1, store_id="STORE-DANA")
         for ap in self._calendars["dana.levi@contoso.com"]:
             shared._add(ap)

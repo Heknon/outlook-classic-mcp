@@ -7,7 +7,7 @@ Every `outlook_*` tool, with parameters, defaults, return shape, and notes on ch
 - [Mail](#mail) — list_mails, search_mails, search_mails_by_person, get_mail, get_thread, send_mail, reply_mail, forward_mail, send_draft, list_signatures, move_mail, delete_mail, mark_mail, save_attachments
 - [Inbox zero](#inbox-zero) — list_quick_steps, run_quick_step, move_mails, check_waiting
 - [Folders](#folders) — list_folders, list_mailboxes, create_folder
-- [Calendar](#calendar) — list_events, get_event, create_event, update_event, delete_event, respond_event, get_free_busy, find_meeting_times
+- [Calendar](#calendar) — list_events, get_event, create_event, update_event, delete_event, respond_event, get_free_busy, find_meeting_times, calendar_stats
 - [Contacts](#contacts) — list_contacts, search_contacts, get_contact, resolve_name
 - [Tasks](#tasks) — list_tasks, create_task, complete_task
 - [Categories](#categories) — list_categories, set_category
@@ -307,12 +307,15 @@ List calendar events overlapping a date range, including expanded recurring inst
 | --------------------- | ------- | -------------- | ----- |
 | `start`               | ISO-8601| now            | |
 | `end`                 | ISO-8601| `start + 14d`  | |
-| `limit`               | int 1–200| `50`          | |
+| `limit`               | int 1–1000| `50`         | |
 | `include_recurrences` | bool    | `true`         | If false, only the master entries — usually you want true. |
+| `offset`              | int     | `0`            | Paging: pass the previous `next_offset`. |
+| `compact`             | bool    | `false`        | Short rows for long (history) ranges. |
+| `include_attendees`   | bool    | `false`        | Attendee names per event. |
 | `mailbox`             | string  | `null`         | Someone else's calendar (address or name). Needs them to have shared it with you; otherwise use free/busy. |
 | `response_format`     | str     | `markdown`     | |
 
-**Returns**: `{ start, end, count, items: [...], truncated, mailbox? }`. Items: `entry_id, subject, start, end, location, organizer, is_recurring, recurrence ("none" | "series" | "occurrence" | "exception"), all_day, preview`.
+**Returns**: `{ start, end, count, offset, items: [...], truncated, next_offset, mailbox? }`. Past ranges work. Items: `entry_id, subject, start, end, location, organizer, is_recurring, recurrence ("none" | "series" | "occurrence" | "exception"), all_day, preview`.
 
 ### `outlook_get_event`
 
@@ -397,6 +400,18 @@ Respond to a meeting invite.
 | `occurrence_start` | ISO-8601 | `null` | Respond to one occurrence. |
 
 **Returns**: `{ status: "responded" | "response_saved_to_drafts", response }`.
+
+### `outlook_calendar_stats`
+
+Patterns in a calendar over a period, computed exactly.
+
+| Param        | Type     | Default | Notes |
+| ------------ | -------- | ------- | ----- |
+| `mailbox`    | string   | yours   | Whose calendar. |
+| `start` / `end` | ISO-8601 | last 8 weeks | Up to about a year. |
+| `max_events` | int      | `3000`  | |
+
+**Returns**: `{ owner, access ("calendar" or "free_busy_only"), range, meetings, meeting_hours, hours_per_week, meetings_per_week, days_with_meetings, median_meeting_minutes, by_weekday, by_start_hour, typical_day {first_meeting_starts, last_meeting_ends}, by_week, busiest_days, recurring_meetings [{title, occurrences, usual_days, usual_time, minutes}], most_frequent_titles, top_people, top_one_on_ones, top_organizers, organized_by_owner?, categories, all_day_events, private_appointments, truncated?, note? }`. Free meetings and all-day events aren't counted as meetings; private appointments are counted (time) but never named.
 
 ### `outlook_get_free_busy`
 
