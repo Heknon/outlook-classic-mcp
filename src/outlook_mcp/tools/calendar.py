@@ -28,9 +28,11 @@ SERIES_DESC = (
 
 
 MAILBOX_DESC = (
-    "Someone else's calendar: their email address or name. Needs read access "
-    "to their calendar (they shared it, or you're a delegate); otherwise use "
-    "outlook_get_free_busy, which works for anyone in the organization."
+    "Whose calendar: omit for the user's own. When the question is about "
+    "another person (\"Dana's meetings last week\"), pass their name or "
+    "address here directly — don't look at the user's own calendar first. "
+    "Needs read access to their calendar (shared, or delegate); otherwise "
+    "use outlook_get_free_busy, which works for anyone in the organization."
 )
 
 READ_ONLY = {
