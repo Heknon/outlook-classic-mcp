@@ -325,11 +325,19 @@ def register(mcp, bridge) -> None:
         end: Annotated[Optional[str], Field(description="ISO-8601 local end. Defaults to start + 1 day.")] = None,
         interval_minutes: Annotated[int, Field(ge=5, le=60, description="Resolution of the free/busy data.")] = 30,
         include_me: Annotated[bool, Field(description="Include your own free/busy too.")] = False,
+        include_titles: Annotated[
+            bool,
+            Field(description="Also show meeting titles for people whose calendar is shared with you (private ones stay hidden)."),
+        ] = True,
     ) -> str:
-        """When people are busy, from Exchange free/busy.
+        """When people are busy, from Exchange free/busy — plus their meeting
+        titles where you have access to their calendar.
 
-        Works for anyone in the organization without access to their
-        calendar (no meeting details, only busy / tentative / out of office).
+        Busy blocks work for anyone in the organization. For people whose
+        calendar is shared with you (or who you're a delegate for) each
+        entry also has `meetings` with titles and locations (`access:
+        "calendar"`); others are `access: "free_busy_only"`. Private
+        appointments show as "Private appointment".
         """
         data = await bridge.call(
             cal_client.get_free_busy,
@@ -338,6 +346,7 @@ def register(mcp, bridge) -> None:
             end=end,
             interval_minutes=interval_minutes,
             include_me=include_me,
+            include_titles=include_titles,
         )
         return format_response(data, "json")
 
@@ -376,6 +385,10 @@ def register(mcp, bridge) -> None:
         tentative_is_free: Annotated[bool, Field(description="Treat tentative as available.")] = False,
         max_results: Annotated[int, Field(ge=1, le=50)] = 10,
         max_per_day: Annotated[int, Field(ge=1, le=20, description="Spread results across days.")] = 3,
+        include_titles: Annotated[
+            bool,
+            Field(description="Also list the meetings (titles) of people whose calendar is shared with you, to explain conflicts."),
+        ] = True,
     ) -> str:
         """Find times when all required attendees (and you) are free.
 
@@ -399,5 +412,6 @@ def register(mcp, bridge) -> None:
             tentative_is_free=tentative_is_free,
             max_results=max_results,
             max_per_day=max_per_day,
+            include_titles=include_titles,
         )
         return format_response(data, "json")

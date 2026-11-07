@@ -1,6 +1,7 @@
 """Tests for utils.scheduling and the free/busy client functions."""
 
 import datetime as dt
+from types import SimpleNamespace
 
 import pytest
 
@@ -215,3 +216,74 @@ def test_other_calendar_needs_permission():
     assert cal.calendar_folder(ns2, "ann@x.com") == (folder, "Ann")
     with pytest.raises(OutlookError, match="address book"):
         cal.calendar_folder(_NS({"x": _Recip("x", resolves=False)}), "x")
+
+
+# ------------------------------------------------- meeting titles (access)
+
+
+class _Appt:
+    def __init__(self, subject, start, end, sensitivity=0, busy=2, location=""):
+        self.Subject, self.Sensitivity, self.BusyStatus, self.Location = subject, sensitivity, busy, location
+        self.Start, self.End = start, end
+        self.EntryID, self.RecurrenceState, self.AllDayEvent = subject, 0, False
+
+
+class _Cal:
+    def __init__(self, appts):
+        self.appts = appts
+
+    @property
+    def Items(self):
+        appts = self.appts
+
+        class _Items(list):
+            IncludeRecurrences = False
+
+            def Sort(self, *a):
+                self.sort(key=lambda x: x.Start)
+
+            def Restrict(self, f):
+                return _Items(self)
+
+        return _Items(appts)
+
+
+def _utc(h, m=0):
+    return dt.datetime(2026, 11, 9, h, m, tzinfo=dt.timezone.utc)
+
+
+def test_free_busy_titles_only_where_calendar_is_shared():
+    raw = "0" * 18 + "22" + "0" * 28
+    dana_cal = _Cal([
+        _Appt("Doctor - Dr. Katz", _utc(8), _utc(8, 30), sensitivity=2, location="Clinic"),
+        _Appt("Roadmap", _utc(9), _utc(10), location="Room 2"),
+        _Appt("Focus (free)", _utc(11), _utc(12), busy=0),
+    ])
+
+    class NS(_NS):
+        def GetSharedDefaultFolder(self, recip, kind):
+            if recip.Name == "Dana":
+                return dana_cal
+            raise Exception("no access")
+
+    ns = NS({"dana": _Recip("Dana", raw), "yossi": _Recip("Yossi", raw)})
+    out = cal.get_free_busy(None, ns, people=["dana", "yossi"],
+                            start="2026-11-09T07:00:00", end="2026-11-09T18:00:00")
+    rows = {p["name"]: p for p in out["people"]}
+    assert rows["Yossi"]["access"] == "free_busy_only" and "meetings" not in rows["Yossi"]
+    meetings = rows["Dana"]["meetings"]
+    assert [m["subject"] for m in meetings] == ["Private appointment", "Roadmap"]  # free one omitted
+    assert "location" not in meetings[0] and meetings[1]["location"] == "Room 2"
+    assert "Katz" not in str(out) and "Clinic" not in str(out)
+    assert "note" in out
+
+    plain = cal.get_free_busy(None, ns, people=["dana"], start="2026-11-09T07:00:00",
+                              end="2026-11-09T18:00:00", include_titles=False)
+    assert "access" not in plain["people"][0]
+
+
+def test_own_private_meetings_keep_their_titles():
+    own = _Cal([_Appt("My dentist", _utc(8), _utc(9), sensitivity=2)])
+    ns = SimpleNamespace(GetDefaultFolder=lambda k: own)
+    out = cal._meetings_for(ns, None, dt.datetime(2026, 11, 9, 0), dt.datetime(2026, 11, 10, 0), is_me=True)
+    assert out[0]["subject"] == "My dentist"

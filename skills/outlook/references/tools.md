@@ -408,8 +408,9 @@ When people are busy, from Exchange free/busy. Works for anyone in the organizat
 | `start` / `end` | ISO-8601 | now / +1 day | At most 62 days. |
 | `interval_minutes` | int 5–60 | `30` | Resolution. |
 | `include_me` | bool | `false` | |
+| `include_titles` | bool | `true` | Meeting titles for calendars shared with you. |
 
-**Returns**: `{ start, end, interval_minutes, people: [{name, busy: [{start, end, status}]}], problems? }`. `status` is `busy`, `tentative`, `out_of_office`, `working_elsewhere` or `unknown`. People whose free/busy can't be read (external, unresolvable) are under `problems`.
+**Returns**: `{ start, end, interval_minutes, people: [{name, busy: [{start, end, status}], access: "calendar"|"free_busy_only", meetings?: [{start, end, subject, status, location?}]}], note?, problems? }`. Others' private appointments are `subject: "Private appointment"` with no location. `status` is `busy`, `tentative`, `out_of_office`, `working_elsewhere` or `unknown`. People whose free/busy can't be read (external, unresolvable) are under `problems`.
 
 ### `outlook_find_meeting_times`
 
@@ -428,7 +429,7 @@ Scheduling assistant: slots when you and all required attendees are free.
 | `tentative_is_free` | bool | `false` | |
 | `max_results` / `max_per_day` | int | `10` / `3` | |
 
-**Returns**: `{ duration_minutes, searched, required, optional, count, slots: [{start, end, optional_busy?, tentative?}], problems?, notes? }`. "Working elsewhere" counts as available; unknown free/busy (beyond published data) counts as busy.
+**Returns**: `{ duration_minutes, searched, required, optional, calendars: [{name, access, meetings?}], count, slots: [{start, end, optional_busy?, tentative?}], problems?, notes? }`. `calendars` lists the meeting titles of people whose calendar you can see (use it to explain conflicts); `include_titles=false` omits it. "Working elsewhere" counts as available; unknown free/busy (beyond published data) counts as busy.
 
 Then create the meeting with `outlook_create_event(attendees=..., start=slot.start, end=slot.end)`.
 

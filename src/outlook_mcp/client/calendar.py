@@ -113,26 +113,16 @@ def _as_naive(value: Any) -> dt.datetime | None:
     )
 
 
-def list_events(
-    outlook: Any,
-    namespace: Any,
-    *,
-    start: str | None = None,
-    end: str | None = None,
-    limit: int = 50,
-    include_recurrences: bool = True,
-    mailbox: str | None = None,
-) -> dict[str, Any]:
-    cal, owner = calendar_folder(namespace, mailbox)
+def _events_between(
+    cal: Any, start_dt: dt.datetime, end_dt: dt.datetime, limit: int, include_recurrences: bool = True
+) -> tuple[list[Any], bool]:
+    """Items of calendar folder ``cal`` overlapping [start_dt, end_dt)."""
     items = cal.Items
     # Outlook requires the collection sorted ascending by [Start] BEFORE
     # IncludeRecurrences is set, or recurring series expand incorrectly.
     items.Sort("[Start]")
     if include_recurrences:
         items.IncludeRecurrences = True
-
-    start_dt = from_iso(start) or dt.datetime.now()
-    end_dt = from_iso(end) or (start_dt + dt.timedelta(days=14))
 
     # DASL property query (locale-independent ISO dates) instead of a plain
     # Jet literal — see to_dasl_date() for why the plain "[Start] >= 'mm/dd
@@ -144,7 +134,7 @@ def list_events(
     )
     filtered = items.Restrict(restrict)
 
-    results: list[dict[str, Any]] = []
+    found: list[Any] = []
     truncated = False
     for ev in filtered:
         ev_start = _as_naive(_safe_get(ev, "Start"))
@@ -166,11 +156,30 @@ def list_events(
             continue
         if ev_end is None and ev_start < start_dt:
             continue
-        if len(results) >= limit:
+        if len(found) >= limit:
             truncated = True
             break
-        results.append(_event_summary(ev))
+        found.append(ev)
+    return found, truncated
 
+
+def list_events(
+    outlook: Any,
+    namespace: Any,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 50,
+    include_recurrences: bool = True,
+    mailbox: str | None = None,
+) -> dict[str, Any]:
+    cal, owner = calendar_folder(namespace, mailbox)
+    start_dt = from_iso(start) or dt.datetime.now()
+    end_dt = from_iso(end) or (start_dt + dt.timedelta(days=14))
+    found, truncated = _events_between(cal, start_dt, end_dt, limit, include_recurrences)
+    results = [_event_summary(ev) for ev in found]
+    if owner:
+        results = [_mask_private(r, ev) for r, ev in zip(results, found)]
     return {
         "start": start_dt.isoformat(),
         "end": end_dt.isoformat(),
@@ -179,6 +188,53 @@ def list_events(
         "truncated": truncated,
         **({"mailbox": owner} if owner else {}),
     }
+
+
+# OlSensitivity
+_PRIVATE = 2
+_BUSY_NAMES = {0: "free", 1: "tentative", 2: "busy", 3: "out_of_office", 4: "working_elsewhere"}
+
+
+def _mask_private(row: dict[str, Any], ev: Any) -> dict[str, Any]:
+    """Someone else's private appointment: keep the time, hide the details."""
+    if _safe_get(ev, "Sensitivity", 0) == _PRIVATE:
+        return {
+            **{k: row.get(k) for k in ("entry_id", "start", "end", "all_day", "is_recurring", "recurrence")},
+            "subject": "Private appointment",
+            "private": True,
+        }
+    return row
+
+
+def _meetings_for(namespace: Any, recip: Any, start_dt: dt.datetime, end_dt: dt.datetime,
+                  is_me: bool = False, limit: int = 50) -> list[dict[str, Any]] | None:
+    """Meeting titles in the window, or None when the calendar can't be opened."""
+    try:
+        if is_me:
+            cal = namespace.GetDefaultFolder(OL_FOLDER_CALENDAR)
+        else:
+            cal = namespace.GetSharedDefaultFolder(recip, OL_FOLDER_CALENDAR)
+        found, _ = _events_between(cal, start_dt, end_dt, limit)
+    except Exception:
+        return None
+    out = []
+    for ev in found:
+        private = (not is_me) and _safe_get(ev, "Sensitivity", 0) == _PRIVATE
+        busy = _BUSY_NAMES.get(_safe_get(ev, "BusyStatus", 2), "busy")
+        if busy == "free" and not is_me:
+            continue
+        row = {
+            "start": to_iso(_safe_get(ev, "Start")),
+            "end": to_iso(_safe_get(ev, "End")),
+            "subject": "Private appointment" if private else _safe_get(ev, "Subject", ""),
+            "status": busy,
+        }
+        if not private:
+            loc = _safe_get(ev, "Location", "")
+            if loc:
+                row["location"] = loc
+        out.append(row)
+    return out
 
 
 def get_event(
@@ -248,6 +304,7 @@ def _people_free_busy(
     people: list[str],
     start: dt.datetime,
     interval: int,
+    recips: dict[str, Any] | None = None,
 ) -> tuple[dict[str, FreeBusy], list[dict[str, str]]]:
     found: dict[str, FreeBusy] = {}
     problems: list[dict[str, str]] = []
@@ -258,6 +315,8 @@ def _people_free_busy(
             problems.append({"who": who, "error": str(exc)})
             continue
         name = str(_safe_get(recip, "Name", who) or who)
+        if recips is not None:
+            recips[name] = recip
         try:
             found[name] = _fetch_free_busy(recip, start, interval)
         except Exception:
@@ -291,6 +350,20 @@ def _range(start: str | None, end: str | None, default_days: int) -> tuple[dt.da
     return start_dt, end_dt
 
 
+def _calendar_details(namespace: Any, recips: dict[str, Any], me_name: str | None,
+                      names: list[str], start_dt: dt.datetime, end_dt: dt.datetime) -> list[dict[str, Any]]:
+    """Per person: their meeting titles in the window if their calendar is
+    visible to the user, else just the access level."""
+    out = []
+    for name in names:
+        meetings = _meetings_for(namespace, recips.get(name), start_dt, end_dt, is_me=name == me_name, limit=30)
+        if meetings is None:
+            out.append({"name": name, "access": "free_busy_only"})
+        else:
+            out.append({"name": name, "access": "calendar", "meetings": meetings})
+    return out
+
+
 def get_free_busy(
     outlook: Any,
     namespace: Any,
@@ -300,31 +373,45 @@ def get_free_busy(
     end: str | None = None,
     interval_minutes: int = 30,
     include_me: bool = False,
+    include_titles: bool = True,
 ) -> dict[str, Any]:
     start_dt, end_dt = _range(start, end, 1)
-    found, problems = _people_free_busy(namespace, people, start_dt, interval_minutes)
+    recips: dict[str, Any] = {}
+    found, problems = _people_free_busy(namespace, people, start_dt, interval_minutes, recips)
+    me_name = None
     if include_me:
         mine = _me_free_busy(namespace, start_dt, interval_minutes)
         if mine:
+            me_name = mine[0]
             found = {mine[0]: mine[1], **found}
     result = []
     for name, fb in found.items():
         blocks = busy_blocks(fb, start_dt, end_dt)
-        result.append(
-            {
-                "name": name,
-                "busy": [
-                    {"start": to_iso(b["start"]), "end": to_iso(b["end"]), "status": b["status"]}
-                    for b in blocks
-                ],
-            }
-        )
+        row: dict[str, Any] = {
+            "name": name,
+            "busy": [
+                {"start": to_iso(b["start"]), "end": to_iso(b["end"]), "status": b["status"]}
+                for b in blocks
+            ],
+        }
+        if include_titles:
+            meetings = _meetings_for(namespace, recips.get(name), start_dt, end_dt, is_me=name == me_name)
+            if meetings is None:
+                row["access"] = "free_busy_only"
+            else:
+                row["access"] = "calendar"
+                row["meetings"] = meetings
+        result.append(row)
     out: dict[str, Any] = {
         "start": to_iso(start_dt),
         "end": to_iso(end_dt),
         "interval_minutes": interval_minutes,
         "people": result,
     }
+    if include_titles and any(r.get("access") == "free_busy_only" for r in result):
+        out["note"] = (
+            "Meeting titles are shown only for calendars shared with you; others show busy/free."
+        )
     if problems:
         out["problems"] = problems
     return out
@@ -347,6 +434,7 @@ def find_meeting_times(
     tentative_is_free: bool = False,
     max_results: int = 10,
     max_per_day: int = 3,
+    include_titles: bool = True,
 ) -> dict[str, Any]:
     start_dt, end_dt = _range(start, end, 7)
     now = dt.datetime.now()
@@ -362,12 +450,15 @@ def find_meeting_times(
 
     # Free/busy resolution: fine enough for the step, and dividing an hour.
     interval = 15 if step_minutes % 15 == 0 else 5
-    required, problems = _people_free_busy(namespace, attendees, start_dt, interval)
+    recips: dict[str, Any] = {}
+    required, problems = _people_free_busy(namespace, attendees, start_dt, interval, recips)
+    me_name = None
     if include_me:
         mine = _me_free_busy(namespace, start_dt, interval)
         if mine:
+            me_name = mine[0]
             required = {mine[0]: mine[1], **required}
-    optional, opt_problems = _people_free_busy(namespace, optional_attendees or [], start_dt, interval)
+    optional, opt_problems = _people_free_busy(namespace, optional_attendees or [], start_dt, interval, recips)
     problems += opt_problems
 
     slots = find_slots(
@@ -389,6 +480,8 @@ def find_meeting_times(
         "searched": {"start": to_iso(start_dt), "end": to_iso(end_dt)},
         "required": list(required),
         "optional": list(optional),
+        **({"calendars": _calendar_details(namespace, recips, me_name, list(required) + list(optional),
+                                           start_dt, end_dt)} if include_titles else {}),
         "count": len(slots),
         "slots": [
             {

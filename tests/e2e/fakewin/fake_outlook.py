@@ -451,6 +451,7 @@ class AppointmentItem(_Item):
         self.ReminderSet = False
         self.ReminderMinutesBeforeStart = 15
         self.BusyStatus = 2
+        self.Sensitivity = 0
         self.Recipients = Recipients(app)
         self._owner = app._me.PrimarySmtpAddress
         for k, v in kw.items():
@@ -1254,6 +1255,9 @@ class Application:
             self._calendars.setdefault(smtp, []).append(ap)
             return ap
 
+        doctor = busy("dana.levi@contoso.com", 1, 8, 8.5, subject="Doctor - Dr. Katz")
+        doctor.Sensitivity = 2  # private
+        doctor.Location = "Clinic"
         busy("dana.levi@contoso.com", 1, 13, 15, subject="Roadmap planning")
         busy("dana.levi@contoso.com", 1, 15, 16, status=1, subject="Maybe: vendor call")
         busy("yossi@contoso.com", 1, 11, 13, subject="Hiring loop")

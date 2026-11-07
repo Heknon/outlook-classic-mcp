@@ -2,6 +2,11 @@
 
 ## 0.5.0
 
+- Meeting titles where you have access: `outlook_get_free_busy` and
+  `outlook_find_meeting_times` include colleagues' meeting titles/locations
+  when their calendar is shared with you (`access: "calendar"`), busy/free
+  otherwise; others' private appointments are masked (also in
+  `outlook_list_events(mailbox=...)`).
 - Attachments: `save_attachments` saves to a per-message folder by default,
   skips inline images (signature logos), saves attached emails as `.msg`,
   fixes invalid file names instead of failing, reports per-attachment

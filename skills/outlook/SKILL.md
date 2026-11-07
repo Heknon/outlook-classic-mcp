@@ -156,6 +156,8 @@ Write Hebrew drafts as normal plain text in `body`; the server makes the paragra
 - Ask or infer the working week: for a Sunday–Thursday week pass `working_days=["sun","mon","tue","wed","thu"]`. Default hours are 09:00–17:00 local.
 - Offer the user a few slots, then `outlook_create_event` with the attendees (saved unsent in draft-only mode).
 - "What's on Ann's calendar?" (meeting titles/details): `outlook_list_events(mailbox="ann@...")`. This needs Ann to have shared her calendar; if it fails, fall back to free/busy and say so.
+- `outlook_get_free_busy` and `outlook_find_meeting_times` already include meeting titles for people whose calendar is shared with the user (`access: "calendar"`); use them to explain conflicts ("Yossi is in 'Hiring loop' until 13:00"). For `free_busy_only` people say only that they're busy.
+- Never try to reveal what's behind "Private appointment".
 
 ## Default workflow
 

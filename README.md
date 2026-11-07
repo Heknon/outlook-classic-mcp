@@ -306,6 +306,12 @@ own replies are included — with each reply's quoted history removed
 - **Free/busy for anyone:** `get_free_busy(people=[...])` shows when
   people are busy, tentative or out of office, from Exchange free/busy —
   no calendar permission needed, like Outlook's Scheduling Assistant.
+- **Meeting titles where you have access:** for colleagues whose
+  calendar is shared with you (or who you're a delegate for),
+  `get_free_busy` and `find_meeting_times` also show their meetings'
+  titles and locations; everyone else stays busy/free only (`access`
+  says which). Private appointments always show as "Private
+  appointment".
 - **Find a time:** `find_meeting_times(attendees=[...], duration_minutes=60)`
   returns slots when you and every required attendee are free, within
   working hours (`day_start`/`day_end`) and working days

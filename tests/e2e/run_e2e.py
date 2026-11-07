@@ -328,8 +328,9 @@ async def scenario_draft_only(r: Run):
 
     async def t_shared_calendar():
         out = await r.call("outlook_list_events", mailbox="Dana Levi", start=local(1, "00:00"), end=local(1, "23:59"))
-        assert [i["subject"] for i in out["items"]] == ["Roadmap planning", "Maybe: vendor call"], out
-        return "Dana Levi's shared calendar"
+        assert [i["subject"] for i in out["items"]] == ["Private appointment", "Roadmap planning", "Maybe: vendor call"], out
+        assert "Katz" not in json.dumps(out) and "Clinic" not in json.dumps(out), "private details leaked"
+        return "Dana Levi's shared calendar (private one masked)"
 
     async def t_shared_denied():
         try:
@@ -345,7 +346,13 @@ async def scenario_draft_only(r: Run):
         by = {p["name"]: p["busy"] for p in out["people"]}
         assert by["Yossi Mizrahi"] == [{"start": local(1, "11:00") + off(1), "end": local(1, "13:00") + off(1), "status": "busy"}], by
         statuses = [b["status"] for b in by["Dana Levi"]]
-        assert statuses == ["busy", "tentative"], statuses
+        assert statuses == ["busy", "busy", "tentative"], statuses
+        rows = {p["name"]: p for p in out["people"]}
+        assert rows["Yossi Mizrahi"]["access"] == "free_busy_only" and "meetings" not in rows["Yossi Mizrahi"]
+        assert rows["Dana Levi"]["access"] == "calendar", rows["Dana Levi"]
+        titles = [m["subject"] for m in rows["Dana Levi"]["meetings"]]
+        assert titles == ["Private appointment", "Roadmap planning", "Maybe: vendor call"], titles
+        assert "Katz" not in json.dumps(out) and "Clinic" not in json.dumps(out), "private details leaked"
         assert out["problems"][0]["who"] == "ext@gmail.com", out.get("problems")
         return "Yossi 11-13, Dana busy+tentative, external reported"
 
@@ -358,6 +365,10 @@ async def scenario_draft_only(r: Run):
         starts = [s["start"][11:16] for s in out["slots"]]
         # Me: 09:00-09:15 standup, 10-11 1:1; Yossi 11-13; Dana 13-15, tentative 15-16.
         assert starts == ["16:00"], starts
+        cals = {c["name"]: c for c in out["calendars"]}
+        assert cals["Dana Levi"]["access"] == "calendar" and cals["Yossi Mizrahi"]["access"] == "free_busy_only"
+        mine = [m["subject"] for m in cals["Ori Harel"]["meetings"]]
+        assert "Existing 1:1" in mine and "Standup" in mine, mine
         return f"slots {starts}"
 
     async def t_find_times_tentative():
