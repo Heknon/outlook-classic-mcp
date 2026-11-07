@@ -85,8 +85,13 @@ def register(mcp, bridge) -> None:
         """Create an incoming-mail rule, like Outlook's Rules wizard.
 
         Two steps: the first call (confirm=false) returns the rule in plain
-        terms and the recent Inbox mail it would have matched; create it
-        with confirm=true once the user agrees.
+        terms and the recent Inbox mail it would have matched. Then:
+        - if the user asked for exactly this rule, the preview matches it,
+          and it only moves/copies/categorizes/flags, call again with
+          confirm=true and tell the user what it matched;
+        - otherwise (delete, forward/redirect, no conditions, surprising
+          matches, or you interpreted the request) show the preview and
+          wait for the user's yes before confirm=true.
 
         Forward/redirect actions send mail automatically: they're refused in
         draft-only mode, and otherwise only allowed to addresses in your own

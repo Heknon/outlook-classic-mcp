@@ -131,10 +131,17 @@ def run_turn(lab: Path, model: str, prompt: str, resume: str | None = None, time
 
 
 def result_json(call: dict) -> dict:
+    """Tool result as a dict; FastMCP wraps text results as {"result": "<json>"}."""
     try:
-        return json.loads(call["result"] or "")
+        out = json.loads(call["result"] or "")
     except (TypeError, json.JSONDecodeError):
         return {}
+    if isinstance(out, dict) and set(out) == {"result"} and isinstance(out["result"], str):
+        try:
+            return json.loads(out["result"])
+        except json.JSONDecodeError:
+            return {}
+    return out if isinstance(out, dict) else {}
 
 
 # --------------------------------------------------------------- scenarios
@@ -173,17 +180,19 @@ def s_reply_draft(lab, model):
         out = result_json(replies[-1])
         check(out.get("status") == "saved_to_drafts", f"reply status {out.get('status')}", p)
         check("thursday" in str(replies[-1]["input"].get("body", "")).lower(), "reply body missing Thursday", p)
+        check("?" not in str(replies[-1]["input"].get("body", "")), "added questions the user didn't ask for", p)
     return [t], p
 
 
 def s_hebrew(lab, model):
-    t = run_turn(lab, model, "תכין טיוטת תשובה ליוסי על המייל 'Plain text note' שאני אבדוק את זה מחר בבוקר.")
+    t = run_turn(lab, model, "תכין טיוטת תשובה בעברית ליוסי על המייל 'Plain text note': שאני אבדוק את זה מחר בבוקר.")
     p: list[str] = []
     replies = t.called("reply_mail")
     check(bool(replies), "didn't draft a reply", p)
     if replies:
         body = str(replies[-1]["input"].get("body", ""))
         check(any("֐" <= ch <= "׿" for ch in body), "reply not written in Hebrew", p)
+        check("מחר" in body, "reply lost what the user asked to say (tomorrow)", p)
         check("dir=" not in body.lower() and "<p" not in body.lower(), "added its own HTML/direction markup", p)
         check(result_json(replies[-1]).get("status") == "saved_to_drafts", "not saved as draft", p)
     return [t], p
@@ -237,7 +246,16 @@ def s_rule(lab, model):
     p: list[str] = []
     rules = t.called("create_rule")
     check(bool(rules), "didn't use create_rule", p)
-    check(not any(c["input"].get("confirm") for c in rules), "confirmed the rule without asking", p)
+    confirmed = [c for c in rules if c["input"].get("confirm")]
+    check(bool(rules) and not rules[0]["input"].get("confirm"), "skipped the preview", p)
+    for c in confirmed:
+        acts = c["input"].get("actions") or {}
+        risky = any(acts.get(k) for k in ("delete", "delete_permanently", "forward_to", "redirect_to",
+                                          "forward_as_attachment_to"))
+        check(not risky and bool(c["input"].get("conditions")), "confirmed a risky/unconditional rule without asking", p)
+    if confirmed:
+        check(any(x in t.text for x in ("1042", "1043")) or "two" in t.text.lower(),
+              "didn't tell the user what the rule matched", p)
     if rules:
         inp = rules[0]["input"]
         check((inp.get("actions") or {}).get("move_to_folder", "").lower().endswith("vendors"), "wrong folder", p)
@@ -274,7 +292,8 @@ def s_attachment(lab, model):
     check(bool(t.called("save_attachments")), "didn't save the attachment", p)
     reads = [c for c in t.calls if c["name"] == "Read"]
     check(bool(reads), "didn't read the saved file", p)
-    check("fake contract" in t.text.lower() or "pdf-1.7" in t.text.lower(), "didn't report the file's content", p)
+    low = t.text.lower()
+    check("45" in low and ("90" in low or "two years" in low or "2 years" in low), "didn't report the contract terms", p)
     return [t], p
 
 
