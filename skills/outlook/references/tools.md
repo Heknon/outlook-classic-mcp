@@ -5,6 +5,7 @@ Every `outlook_*` tool, with parameters, defaults, return shape, and notes on ch
 ## Contents
 
 - [Mail](#mail) — list_mails, search_mails, search_mails_by_person, get_mail, get_thread, send_mail, reply_mail, forward_mail, send_draft, list_signatures, move_mail, delete_mail, mark_mail, save_attachments
+- [Inbox zero](#inbox-zero) — list_quick_steps, run_quick_step, move_mails, check_waiting
 - [Folders](#folders) — list_folders, list_mailboxes, create_folder
 - [Calendar](#calendar) — list_events, get_event, create_event, update_event, delete_event, respond_event, get_free_busy, find_meeting_times
 - [Contacts](#contacts) — list_contacts, search_contacts, get_contact, resolve_name
@@ -234,6 +235,26 @@ Save one or all attachments from a mail to a local directory.
 | `attachment_index` | int ≥1  | `null`  | 1-indexed. Omit to save all. |
 
 **Returns**: `{ status: "saved", count, files: [absolute paths], output_dir }`.
+
+---
+
+## Inbox zero
+
+### `outlook_list_quick_steps`
+
+No parameters. **Returns** `{ count, quick_steps: [{name, actions: [{kind, folder?, categories?, importance?}], runnable, needs_confirm, problems}] }`. Action kinds: move, copy, mark_read, mark_unread, importance, categorize, clear_categories, flag, clear_flag, mark_complete, delete, delete_permanently (runnable); reply, reply_all, forward, forward_as_attachment, new_message, new_meeting, reply_with_meeting, create_task, create_appointment, always_move_conversation, ignore_conversation (not run).
+
+### `outlook_run_quick_step`
+
+`name` (case-insensitive; a unique partial name works), `entry_ids` (1–500), `confirm` (only for steps that delete). **Returns** `{ status: "done", quick_step, actions, count, items: [{entry_id, subject, new_entry_id}], errors? }` or a preview for delete steps. Refused (with the reason) when the step isn't runnable.
+
+### `outlook_move_mails`
+
+`entry_ids`, `target_folder`, optional `mark_read`, `add_categories`, `flag`. **Returns** `{ status, folder, count, items: [{entry_id, new_entry_id, subject}], errors? }`.
+
+### `outlook_check_waiting`
+
+`folder` (default: the Waiting Quick Step's folder, else a folder named like "Waiting"), `move_answered_to`, `limit`. **Returns** `{ folder, folder_found_by, answered_count, still_waiting_count, answered: [{entry_id, subject, to, waiting_since, days_waiting, replies: [{entry_id, from, when, preview}]}], still_waiting: [...], moved? }`. A reply = a message in the same conversation, from someone else, received after the item was filed (drafts ignored).
 
 ---
 

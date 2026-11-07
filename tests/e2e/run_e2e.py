@@ -140,7 +140,8 @@ async def scenario_draft_only(r: Run):
             "outlook_get_free_busy", "outlook_search_mails_by_person", "outlook_resolve_name",
             "outlook_list_mailboxes", "outlook_get_thread", "outlook_create_rule", "outlook_run_rule",
             "outlook_delete_rule", "outlook_create_category", "outlook_update_category",
-            "outlook_delete_category",
+            "outlook_delete_category", "outlook_list_quick_steps", "outlook_run_quick_step",
+            "outlook_move_mails", "outlook_check_waiting",
         }
         assert expected <= tools, expected - tools
         return f"{len(tools)} tools"
@@ -196,8 +197,8 @@ async def scenario_draft_only(r: Run):
     async def t_by_person():
         out = await r.call("outlook_search_mails_by_person", person="Dana Levi", direction="from")
         subjects = sorted(i["subject"] for i in out["items"])
-        assert subjects == ["Offsite plan", "Old thread", "Q3 numbers", "RE: Offsite plan"], subjects
-        return "4 from Dana Levi"
+        assert subjects == ["Offsite plan", "Old thread", "Q3 numbers", "RE: Contract signature", "RE: Offsite plan"], subjects
+        return "5 from Dana Levi"
 
     async def t_by_person_cc():
         out = await r.call("outlook_search_mails_by_person", person="Yossi Mizrahi", direction="to")
@@ -412,7 +413,8 @@ async def scenario_draft_only(r: Run):
     async def t_all():
         out = await r.call("outlook_search_mails", query="budget", search_in="all")
         subjects = [i["subject"] for i in out["items"]]
-        assert subjects == ["Customer budget question", "Budget 2024 final", "Apollo kickoff budget", "Wedding budget"], subjects
+        assert subjects == ["Customer budget question", "Budget approval", "Budget 2024 final",
+                            "Apollo kickoff budget", "Wedding budget"], subjects
         return f"{len(subjects)} across 4 mailboxes, newest first"
 
     async def t_named_mailbox():
@@ -428,7 +430,8 @@ async def scenario_draft_only(r: Run):
     async def t_person_all():
         out = await r.call("outlook_search_mails_by_person", person="Dana Levi", direction="from", search_in="all")
         subjects = [i["subject"] for i in out["items"]]
-        assert subjects == ["Q3 numbers", "RE: Offsite plan", "Offsite plan", "Old thread", "Budget 2024 final"], subjects
+        assert subjects == ["Q3 numbers", "RE: Offsite plan", "Offsite plan", "RE: Contract signature",
+                            "Old thread", "Budget 2024 final"], subjects
         return "inbox + archive"
 
     async def t_bad_mailbox():
@@ -591,6 +594,55 @@ async def scenario_draft_only(r: Run):
     ]:
         await r.check(name, fn())
 
+
+    # Triage last: it files Inbox mail that earlier checks look for.
+    async def t_quick_steps_listed():
+        out = await r.call("outlook_list_quick_steps")
+        by = {q["name"]: q for q in out["quick_steps"]}
+        assert set(by) == {"Archive", "Action", "Waiting", "Read", "Reply and Delete"}, set(by)
+        assert by["Waiting"]["runnable"] and [a["kind"] for a in by["Waiting"]["actions"]] == ["move", "mark_read"]
+        assert by["Waiting"]["actions"][0]["folder"].endswith("Inbox\\2-Waiting"), by["Waiting"]
+        assert not by["Reply and Delete"]["runnable"], by["Reply and Delete"]
+        return "5 read from the hidden folder (UTF-16 XML); Reply and Delete not runnable"
+
+    async def t_check_waiting():
+        out = await r.call("outlook_check_waiting")
+        assert out["folder"] == "2-Waiting" and out["folder_found_by"] == "quick_step", out
+        assert [a["subject"] for a in out["answered"]] == ["Contract signature"], out["answered"]
+        assert out["answered"][0]["replies"][0]["preview"] == "Signed and attached.", out["answered"][0]
+        assert [w["subject"] for w in out["still_waiting"]] == ["Budget approval"]
+        assert out["still_waiting"][0]["days_waiting"] == 9
+        return "Contract answered by Dana; Budget waiting 9 days"
+
+    async def t_run_quick_step():
+        inbox = await r.call("outlook_list_mails", folder="inbox", limit=50)
+        design = next(i for i in inbox["items"] if i["subject"] == "Design review")
+        out = await r.call("outlook_run_quick_step", name="archive", entry_ids=[design["entry_id"]])
+        assert out["status"] == "done" and out["count"] == 1, out
+        arch = await r.call("outlook_list_mails", folder="Archive")
+        assert [i["subject"] for i in arch["items"]] == ["Design review"] and not arch["items"][0]["unread"]
+        try:
+            await r.call("outlook_run_quick_step", name="Reply and Delete", entry_ids=[design["entry_id"]])
+        except ToolError as exc:
+            assert "aren't run" in str(exc), exc
+        else:
+            raise AssertionError("Reply and Delete was run")
+        return "Archive moved + marked read; Reply and Delete refused"
+
+    async def t_move_mails():
+        inbox = await r.call("outlook_list_mails", folder="inbox", limit=50)
+        ids = [i["entry_id"] for i in inbox["items"] if i["subject"] in ("Plain text note", "Old thread")]
+        out = await r.call("outlook_move_mails", entry_ids=ids, target_folder="Inbox/3-Read", add_categories=["Later"])
+        assert out["count"] == 2, out
+        rd = await r.call("outlook_list_mails", folder="Inbox/3-Read")
+        assert sorted(i["subject"] for i in rd["items"]) == ["Old thread", "Plain text note"]
+        return "2 filed to Read with a category"
+
+    for name, fn in [
+        ("Quick Steps read from mailbox", t_quick_steps_listed), ("Waiting: who replied", t_check_waiting),
+        ("run a Quick Step", t_run_quick_step), ("bulk move", t_move_mails),
+    ]:
+        await r.check(name, fn())
 
 async def scenario_send_enabled(r: Run):
     async def t_send():

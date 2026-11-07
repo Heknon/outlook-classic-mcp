@@ -330,6 +330,29 @@ def main() -> int:
             except Exception:  # noqa: BLE001
                 pass
 
+    @check("Quick Steps read from the mailbox")
+    def t_quick_steps():
+        from outlook_mcp.client import quicksteps
+
+        out = quicksteps.list_quick_steps(outlook, ns)
+        if not out["count"]:
+            return "SKIP: none found — run scripts\\export_quick_steps.py and share the JSON"
+        parts = [f"{q['name']}={'ok' if q['runnable'] else 'not runnable'}" for q in out["quick_steps"]]
+        return "; ".join(parts)
+
+    @check("Waiting folder check")
+    def t_waiting():
+        from outlook_mcp.client import triage
+
+        try:
+            out = triage.check_waiting(outlook, ns, limit=50)
+        except Exception as exc:  # noqa: BLE001
+            if "Couldn't tell" in str(exc):
+                return "SKIP: no Waiting folder found (pass folder=... in real use)"
+            raise
+        return (f"{out['folder']} (via {out['folder_found_by']}): {out['answered_count']} answered, "
+                f"{out['still_waiting_count']} still waiting")
+
     @check("signatures")
     def t_sigs():
         out = mail.list_signatures_info(outlook, ns)
@@ -337,7 +360,8 @@ def main() -> int:
 
     for t in (t_whoami, t_list, t_since, t_reply_draft, t_thread, t_hebrew, t_send_refused, t_event,
               t_list_events, t_fb_me, t_find_me, t_colleague, t_shared, t_ctrlk,
-              t_by_person, t_mailboxes, t_search_all, t_search_archive, t_category, t_rule, t_sigs):
+              t_by_person, t_mailboxes, t_search_all, t_search_archive, t_category, t_rule, t_quick_steps,
+              t_waiting, t_sigs):
         t()
 
     if not args.keep:

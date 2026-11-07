@@ -359,6 +359,15 @@ class MailItem(_Item):
     def ConversationTopic(self):
         return re.sub(r"^(?:(?:RE|FW|AW|WG)\s*:\s*)+", "", self.Subject, flags=re.I)
 
+    def Copy(self):
+        c = MailItem(self._app)
+        for k, v in self.__dict__.items():
+            if k not in ("EntryID", "Parent", "_app"):
+                setattr(c, k, v)
+        if self.Parent is not None:
+            self.Parent._add(c)
+        return c
+
     def Reply(self):
         return self._new_response("RE", True)
 
@@ -665,11 +674,49 @@ class Folder:
         self.Name = name
         self._kind = kind
         self.DefaultItemType = default_type
-        self.EntryID = _new_id("FOLDER")
+        self.EntryID = "00000000" + format(next(_ids), "040X")  # hex, like real folder ids
         self.StoreID = store_id
         self._items: list = []
         self._subs: list[Folder] = []
+        self._hidden: list = []
+        self._container_class = {0: "IPF.Note", 1: "IPF.Appointment", 2: "IPF.Contact", 3: "IPF.Task"}.get(default_type)
         self.Parent = None
+        app._folders_by_id[self.EntryID] = self
+
+    @property
+    def PropertyAccessor(self):
+        folder = self
+
+        class _PA:
+            def GetProperty(self, tag):
+                if tag.endswith("0x3613001F"):
+                    if folder._container_class is None:
+                        raise Exception("property not found")
+                    return folder._container_class
+                raise Exception("property not found")
+
+        return _PA()
+
+    def GetTable(self, filter="", contents=0):
+        rows = list(self._hidden if contents == 1 else self._items)
+
+        class _Row:
+            def __init__(self, item):
+                self._item = item
+
+            def Item(self, name):
+                return {"EntryID": self._item.EntryID, "Subject": self._item.Subject,
+                        "MessageClass": self._item.MessageClass}[name]
+
+        class _Table:
+            @property
+            def EndOfTable(self):
+                return not rows
+
+            def GetNextRow(self):
+                return _Row(rows.pop(0))
+
+        return _Table()
 
     @property
     def FolderPath(self):
@@ -762,6 +809,12 @@ class Namespace:
 
     def GetDefaultFolder(self, kind):
         return self._app._folders[kind]
+
+    def GetFolderFromID(self, entry_id, store_id=None):
+        try:
+            return self._app._folders_by_id[entry_id]
+        except KeyError:
+            raise Exception("The operation failed. An object could not be found.") from None
 
     def GetItemFromID(self, entry_id, store_id=None):
         try:
@@ -942,6 +995,7 @@ class Application:
             ExchangeUser("Room Galil", "room.galil@contoso.com", "Meeting room", "Facilities", "TLV"),
         ]
         self._by_id: dict = {}
+        self._folders_by_id: dict = {}
         self._deleted: list = []
         self._outbox: list = []
         self._filters: list = []
@@ -1007,7 +1061,7 @@ class Application:
             m = MailItem(
                 self, Subject=subject, SenderName=u.Name,
                 SenderEmailAddress=AddressEntry(u).Address, _sender_smtp=u.PrimarySmtpAddress,
-                UnRead=unread, Body=text,
+                UnRead=unread, Body=text, Sent=True,
                 BodyFormat=2 if html else 1,
                 HTMLBody=(f"<html><body><div class=WordSection1><p class=MsoNormal>{text}</p></div></body></html>" if html else ""),
             )
@@ -1030,6 +1084,66 @@ class Application:
         self._gal.append(ExchangeUser("Acme Billing", "billing@acme-supplies.com", "", "", ""))
         mail("Invoice 1042", "Acme Billing", 5)
         mail("Invoice 1043", "Acme Billing", 4)
+
+        # Inbox-zero buckets and the user's Quick Steps (hidden, as XML).
+        def subfolder(parent, name):
+            f = Folder(self, name, None, 0)
+            f.Parent = parent
+            parent._subs.append(f)
+            return f
+
+        archive = subfolder(self._root, "Archive")
+        action = subfolder(inbox, "1-Action")
+        waiting = subfolder(inbox, "2-Waiting")
+        read = subfolder(inbox, "3-Read")
+        qs_folder = Folder(self, "Quick Step Settings", None, 0)
+        qs_folder._container_class = "IPF.Configuration"
+        qs_folder.Parent = self._root
+        self._root._subs.append(qs_folder)
+
+        class _Hidden:
+            def __init__(hidden, subject, xml):
+                hidden.EntryID = _new_id("QS")
+                hidden.Subject = subject
+                hidden.MessageClass = "IPM.Microsoft.CustomAction"
+                data = xml.encode("utf-16")
+
+                class _PA:
+                    def GetProperty(pa, tag):
+                        if tag.endswith("0x7C080102"):
+                            return data
+                        raise Exception("property not found")
+
+                hidden.PropertyAccessor = _PA()
+
+        def quick_step(name, inner):
+            h = _Hidden(name, f'<?xml version="1.0"?><CombinedAction Ordinal="1" Name="{name}">{inner}</CombinedAction>')
+            qs_folder._hidden.append(h)
+            self._by_id[h.EntryID] = h
+
+        def move(f):
+            return f"<ActionMoveToFolder><FolderEntryID>{f.EntryID}</FolderEntryID></ActionMoveToFolder>"
+
+        quick_step("Archive", move(archive) + "<ActionMarkAsRead/>")
+        quick_step("Action", move(action))
+        quick_step("Waiting", move(waiting) + "<ActionMarkAsRead/>")
+        quick_step("Read", move(read))
+        quick_step("Reply and Delete", "<ActionReply/><ActionDeleteMessage/>")
+
+        # Two items waiting for others; one got a reply in the Inbox.
+        def mine(subject, to, hours_ago, folder):
+            m = MailItem(self, Subject=subject, SenderName=self._me.Name, _sender_smtp=self._me.PrimarySmtpAddress,
+                         BodyFormat=1, Sent=True, Body=f"Please review: {subject}")
+            m._display = {1: to, 2: "", 3: ""}
+            m._received = m._sent_on = dt.datetime.now().replace(second=0, microsecond=0) - dt.timedelta(hours=hours_ago)
+            folder._add(m)
+            return m
+
+        contract = mine("Contract signature", "Dana Levi", 72, waiting)
+        mine("Budget approval", "Yossi Mizrahi", 24 * 9, waiting)
+        answer = mail("RE: Contract signature", "Dana Levi", 40, html=False,
+                      body="Signed and attached.\n\nFrom: Ori Harel\nSent: Monday\nPlease review")
+        answer.ConversationID = contract.ConversationID
 
         # A three-message thread: Dana -> my reply (Sent Items) -> Dana.
         first = mail("Offsite plan", "Dana Levi", 30, html=False,
@@ -1089,7 +1203,7 @@ class Application:
             u = next(g for g in self._gal if g.Name == sender)
             m = MailItem(self, Subject=subject, SenderName=u.Name,
                          SenderEmailAddress=AddressEntry(u).Address, _sender_smtp=u.PrimarySmtpAddress,
-                         Body=body or subject, BodyFormat=1)
+                         Body=body or subject, BodyFormat=1, Sent=True)
             m._display = {1: self._me.Name, 2: "", 3: ""}
             m._received = today - dt.timedelta(days=days_ago) + dt.timedelta(hours=10)
             return m

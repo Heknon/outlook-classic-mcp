@@ -33,6 +33,9 @@ Tool categories (all prefixed `outlook_`):
     conversation in one call, quoted history removed), send, reply, forward
     (all three take save_only=true for drafts), send_draft, list_signatures,
     move, delete, mark, save_attachments
+  - Inbox zero: list_quick_steps (the user's Quick Steps = their filing
+    buckets), run_quick_step, move_mails (bulk), check_waiting (which
+    Waiting items got replies). Propose filing to the user before moving.
   - Folders: list_folders, create_folder, list_mailboxes (yours, online
     archive, shared mailboxes, PSTs). Mail searches take search_in=
     'mailbox' | 'archive' | 'all' or mailboxes=[...] to search every folder

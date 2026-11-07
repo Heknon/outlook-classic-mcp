@@ -150,11 +150,12 @@ the server send, add `"env": { "OUTLOOK_MCP_ALLOW_SEND": "1" }` — see
 
 ## Tools
 
-44 tools across 9 categories, all prefixed `outlook_*`.
+48 tools across 10 categories, all prefixed `outlook_*`.
 
 | Category       | Tools |
 | -------------- | ----- |
 | Mail           | `list_mails`, `search_mails`, `search_mails_by_person`, `get_mail`, `get_thread`, `send_mail`, `reply_mail`, `forward_mail`, `send_draft`, `list_signatures`, `move_mail`, `delete_mail`, `mark_mail`, `save_attachments` |
+| Inbox zero     | `list_quick_steps`, `run_quick_step`, `move_mails`, `check_waiting` |
 | Folders        | `list_folders`, `create_folder`, `list_mailboxes` |
 | Calendar       | `list_events`, `get_event`, `create_event`, `update_event`, `delete_event`, `respond_event`, `get_free_busy`, `find_meeting_times` |
 | Contacts       | `list_contacts`, `search_contacts` (saved contacts + org directory), `get_contact`, `resolve_name` (Ctrl+K: name → address, with candidates when ambiguous) |
@@ -186,6 +187,34 @@ archive and shared mailboxes must be open in Outlook's folder pane.
   several people match, it returns the candidates to choose from.
 - `search_mails_by_person(person="Dana", direction="from")` finds mails
   from and/or to someone by name, across Inbox and Sent Items.
+
+### Inbox zero
+
+- **Your Quick Steps are the buckets.** `list_quick_steps` reads the
+  Quick Steps you set up in Outlook (Archive, Action, Waiting, Read, ...)
+  and shows what each does; `run_quick_step(name, entry_ids)` does the
+  same thing to the messages you pick. Outlook has no API for Quick
+  Steps, so they're read from where Outlook stores them in your mailbox
+  (hidden XML). Supported actions: move, copy, mark read/unread,
+  importance, categorize, flag; delete with `confirm=true`. Steps that
+  reply, forward or create items aren't run, and anything not understood
+  is reported rather than guessed.
+- `move_mails` files many messages at once (optionally marking read,
+  adding categories or flagging).
+- `check_waiting` goes through your Waiting folder (found from your
+  Waiting Quick Step) and lists which items got a reply from someone else
+  since you filed them, and which are still waiting and for how long;
+  `move_answered_to` moves the answered ones back.
+- Two ready-made prompts in the plugin:
+  - **`/outlook:triage`** — proposes a bucket for every Inbox message,
+    you approve or change the list, then it files them with your Quick
+    Steps.
+  - **`/outlook:brief`** — Inbox to triage, open Action items, Waiting
+    replies, and today's meetings, on one screen.
+
+If your Quick Steps don't show up as runnable, run
+`python scripts\export_quick_steps.py` once (read-only) and share the
+JSON it writes so the format can be supported.
 
 ### Categories (colours)
 

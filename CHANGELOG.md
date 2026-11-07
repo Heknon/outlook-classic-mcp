@@ -2,6 +2,12 @@
 
 ## 0.5.0
 
+- Inbox zero: `outlook_list_quick_steps` / `outlook_run_quick_step` read the
+  user's Quick Steps from the mailbox (hidden configuration folder, XML)
+  and carry out safe actions; `outlook_move_mails` (bulk);
+  `outlook_check_waiting` (Waiting items that got replies). Plugin prompts
+  `/outlook:triage` and `/outlook:brief`. `scripts/export_quick_steps.py`
+  exports Quick Step definitions (read-only) for format checks.
 - Categories: `outlook_create_category`, `outlook_update_category`
   (recolour/rename), `outlook_delete_category`; all 25 Outlook colours by
   name. `outlook_set_category` gains bulk `entry_ids`, `mode`
