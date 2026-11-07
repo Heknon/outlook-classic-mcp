@@ -1252,6 +1252,7 @@ class Application:
             ap._start = today + dt.timedelta(days=day, hours=h0)
             ap._end = today + dt.timedelta(days=day, hours=h1)
             ap._owner = smtp
+            ap.Organizer = next((u.Name for u in self._gal if u.PrimarySmtpAddress == smtp), smtp)
             self._calendars.setdefault(smtp, []).append(ap)
             return ap
 
